@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aerobic Threshold Validator</title>
+<meta name="description" content="Validate your aerobic threshold from a Garmin .fit or CSV heart-rate file — entirely in your browser.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='0.9em' font-size='90'%3E%E2%9D%A4%EF%B8%8F%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<main class="page">
+  <header class="masthead">
+    <h1>Aerobic Threshold Validator</h1>
+    <p class="tagline">
+      The 60-minute heart-rate drift test: hold a steady effort at your suspected
+      aerobic-threshold heart rate — if HR rises more than 5% from where it started,
+      the effort was above threshold. Everything runs in your browser; no data leaves
+      this page.
+    </p>
+  </header>
+
+  <section id="dropzone" class="dropzone" aria-label="Upload activity file">
+    <div class="dropzone-inner">
+      <p class="dropzone-title">Drop a Garmin <code>.fit</code> or <code>.zip</code> file here, or a
+        <code>timestamp,heartrate</code> <code>.csv</code></p>
+      <p class="dropzone-sub">Garmin&nbsp;Connect → activity → gear icon → “Export Original” — the downloaded zip works as-is</p>
+      <div class="dropzone-actions">
+        <label class="btn primary" for="file-input">Choose file<input id="file-input" type="file" accept=".fit,.zip,.csv,.txt,application/octet-stream,application/zip" hidden></label>
+        <button class="btn" id="demo-btn" type="button">Try demo data</button>
+      </div>
+      <p id="load-error" class="load-error" role="alert" hidden></p>
+    </div>
+  </section>
+
+  <section id="analysis-section" hidden>
+    <p id="activity-meta" class="activity-meta"></p>
+
+    <div id="verdict" class="verdict">
+      <div class="verdict-title"></div>
+      <div class="verdict-body"></div>
+    </div>
+
+    <form id="settings-form" class="settings" aria-label="Test settings">
+      <div class="setting">
+        <label for="set-window">Window</label>
+        <div class="setting-input"><input id="set-window" type="number" min="5" max="600" step="5" value="60"><span>min</span></div>
+      </div>
+      <div class="setting">
+        <label for="set-threshold">Allowed rise</label>
+        <div class="setting-input"><input id="set-threshold" type="number" min="0.5" max="25" step="0.5" value="5"><span>%</span></div>
+      </div>
+      <div class="setting">
+        <label for="set-split">Splits</label>
+        <div class="setting-input"><input id="set-split" type="number" min="1" max="120" step="1" value="10"><span>min</span></div>
+      </div>
+      <div class="setting">
+        <label for="set-smooth">Baseline avg</label>
+        <div class="setting-input"><input id="set-smooth" type="number" min="5" max="600" step="5" value="30"><span>s</span></div>
+      </div>
+      <button class="btn subtle" id="reset-settings" type="button">Reset defaults</button>
+    </form>
+
+    <div class="chart-card">
+      <div class="chart-hint">Drag the shaded window to move it · drag its edges to resize · arrow keys nudge (⇧ = 5&nbsp;min)</div>
+      <div id="chart" class="chart viz-root"></div>
+      <div id="slider-row" class="slider-row" hidden>
+        <input id="window-slider" type="range" min="0" max="0" step="10" value="0" aria-label="Window start position">
+        <span id="window-readout" class="window-readout"></span>
+      </div>
+    </div>
+
+    <h2>Window stats</h2>
+    <div id="stats" class="stats"></div>
+
+    <h2>Splits</h2>
+    <div class="table-wrap">
+      <table id="splits-table" class="splits">
+        <thead>
+          <tr>
+            <th>Split</th><th>Time</th><th class="num">Avg HR</th><th class="num">Range</th>
+            <th class="num">Δ vs start</th><th class="num">Time over</th><th class="num">Headroom</th>
+          </tr>
+        </thead>
+        <tbody id="splits-body"></tbody>
+      </table>
+    </div>
+    <p class="footnote">* partial split (window not evenly divisible) · Δ vs start compares the split’s average
+      heart rate to the window’s starting (baseline) heart rate · headroom is how far the split average sits
+      below the threshold, as a percent of threshold.</p>
+  </section>
+
+  <footer class="footer">
+    <p>Method after Scott Johnston (Uphill Athlete) — a field test, not medical advice.
+      Data is processed locally and never uploaded.</p>
+  </footer>
+</main>
+
+<script src="js/fit-parser.js"></script>
+<script src="js/zip.js"></script>
+<script src="js/csv-parser.js"></script>
+<script src="js/analysis.js"></script>
+<script src="js/chart.js"></script>
+<script src="js/demo.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
