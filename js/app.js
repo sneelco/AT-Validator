@@ -31,7 +31,8 @@
    'stats', 'splits-body', 'splits-table', 'verdict', 'activity-meta', 'settings-form',
    'set-window', 'set-threshold', 'set-split', 'set-smooth', 'reset-settings',
    'analysis-section', 'load-error', 'slider-row',
-   'baseline-slider', 'baseline-readout', 'baseline-reset', 'baseline-warning'
+   'baseline-slider', 'baseline-readout', 'baseline-reset', 'baseline-warning',
+   'apply-detected'
   ].forEach(function (id) { els[id] = document.getElementById(id); });
 
   var chart = new window.ATV.chart.ATChart(els.chart, {
@@ -213,6 +214,7 @@
   }
 
   function renderBaseline(r) {
+    els['apply-detected'].hidden = detectedBaseline() === null;
     var manual = state.baselineOverride !== null;
     var slider = els['baseline-slider'];
     slider.min = Math.max(Math.floor(state.hrRange[0]) - 5, 30);
@@ -451,6 +453,13 @@
   });
   els['baseline-reset'].addEventListener('click', function () {
     state.baselineOverride = null;
+    refresh();
+  });
+  els['apply-detected'].addEventListener('click', function () {
+    if (!state.detected || state.detected.confidence === 'none') return;
+    state.baselineOverride = null;
+    state.windowStart = state.detected.windowStart;
+    fitWindowToActivity();
     refresh();
   });
 

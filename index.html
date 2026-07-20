@@ -58,7 +58,12 @@
         <label for="set-smooth">Baseline avg</label>
         <div class="setting-input"><input id="set-smooth" type="number" min="5" max="600" step="5" value="30"><span>s</span></div>
       </div>
-      <button class="btn subtle" id="reset-settings" type="button">Reset defaults</button>
+      <div class="settings-actions">
+        <button class="btn subtle" id="apply-detected" type="button" hidden
+          title="Move the window back to the detected plateau and restore the detected baseline">
+          Re-apply detected</button>
+        <button class="btn subtle" id="reset-settings" type="button">Reset defaults</button>
+      </div>
     </form>
 
     <div class="chart-card">

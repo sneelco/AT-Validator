@@ -38,7 +38,9 @@ verdict plus supporting statistics and splits.
   and splits all follow. If your manual value strays more than 2 bpm from the
   detected plateau, an inline note shows the counterfactual verdict at the
   detected value. Moving or resizing the window resets the baseline to the
-  detected plateau ("Reset to auto" does the same).
+  detected plateau ("Reset to auto" does the same), and a **Re-apply detected**
+  button in the settings bar restores both the detected window placement and
+  baseline after any manual exploring.
 - **Verdict + stats** — end-of-window rise vs. start, average/min/max HR,
   percent of time over/under threshold, headroom below the threshold, and
   first-half vs. second-half HR drift.

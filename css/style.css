@@ -139,7 +139,7 @@ body {
   border: 1px solid var(--border); border-radius: 6px;
 }
 .setting-input span { color: var(--text-muted); font-size: 13px; }
-.settings .btn.subtle { margin-left: auto; }
+.settings-actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* Chart */
 .chart-card {
@@ -244,5 +244,5 @@ h2 { font-size: 17px; margin: 26px 0 12px; }
 
 @media (max-width: 640px) {
   .chart-flex { height: 300px; }
-  .settings .btn.subtle { margin-left: 0; }
+  .settings-actions { margin-left: 0; }
 }
