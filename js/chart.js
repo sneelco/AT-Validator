@@ -16,6 +16,9 @@
   var MARGIN = { top: 24, right: 16, bottom: 34, left: 48 };
   var HANDLE_PX = 7;   // half-width of the edge-grab zone
   var MIN_WINDOW = 5 * 60;
+  var SPEED_H = 64;    // slim pace/speed strip height
+  var SPEED_GAP = 12;  // gap between HR plot and the strip
+  var DEV_TOL = 0.05;  // highlight beyond ±5% of the window median
 
   function ATChart(container, callbacks) {
     this.container = container;
@@ -25,6 +28,8 @@
     this.hoverT = null;
     this.drag = null;
     this.absoluteT0 = null; // unix seconds of first sample, when known
+    this.hasSpeed = false;
+    this.speedMode = 'pace'; // 'pace' (min/km, up = faster) | 'speed' (km/h)
 
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'atv-chart-canvas';
@@ -77,7 +82,9 @@
       over: v('--status-critical', '#d03b3b'),
       wash: v('--window-wash', 'rgba(42, 120, 214, 0.08)'),
       washEdge: v('--window-edge', 'rgba(42, 120, 214, 0.55)'),
-      outside: v('--series-outside', '#b9b7ae')
+      outside: v('--series-outside', '#b9b7ae'),
+      speed: v('--series-speed', '#008300'),
+      deviate: v('--amber-text', '#8a5f00')
     };
   };
 
@@ -85,7 +92,22 @@
     this.samples = samples;
     this.absoluteT0 = absoluteT0 !== undefined ? absoluteT0 : null;
     this.hoverT = null;
+    var withSpeed = 0;
+    for (var i = 0; i < samples.length; i++) {
+      if (samples[i].speed !== undefined && samples[i].speed !== null && samples[i].speed > 0.05) withSpeed++;
+    }
+    this.hasSpeed = samples.length > 0 && withSpeed / samples.length > 0.5;
     this.render();
+  };
+
+  ATChart.prototype.setSpeedMode = function (mode) {
+    this.speedMode = mode === 'speed' ? 'speed' : 'pace';
+    this.render();
+  };
+
+  // Displayed value for the strip: km/h, or s/km for pace.
+  ATChart.prototype.speedValue = function (v) {
+    return this.speedMode === 'speed' ? v * 3.6 : 1000 / v;
   };
 
   ATChart.prototype.setState = function (state) {
@@ -99,11 +121,16 @@
     var rect = this.container.getBoundingClientRect();
     var w = Math.max(rect.width, 320);
     var h = Math.max(rect.height, 240);
+    var stripSpace = this.hasSpeed ? SPEED_H + SPEED_GAP : 0;
+    var plotH = h - MARGIN.top - MARGIN.bottom - stripSpace;
     return {
       w: w, h: h,
       plotX: MARGIN.left, plotY: MARGIN.top,
       plotW: w - MARGIN.left - MARGIN.right,
-      plotH: h - MARGIN.top - MARGIN.bottom
+      plotH: plotH,
+      speedY: MARGIN.top + plotH + SPEED_GAP,
+      speedH: SPEED_H,
+      bottomY: MARGIN.top + plotH + stripSpace   // where x-axis labels sit
     };
   };
 
@@ -162,9 +189,10 @@
       weX = Math.min(weX, L.plotX + L.plotW);
       thY = yOf(st.threshold);
 
-      // Window wash + split ticks.
+      // Window wash + split ticks (wash spans the speed strip too).
+      var washBottom = this.hasSpeed ? L.speedY + L.speedH : L.plotY + L.plotH;
       ctx.fillStyle = P.wash;
-      ctx.fillRect(wsX, L.plotY, weX - wsX, L.plotH);
+      ctx.fillRect(wsX, L.plotY, weX - wsX, washBottom - L.plotY);
 
       ctx.strokeStyle = P.grid;
       ctx.lineWidth = 1;
@@ -183,7 +211,7 @@
       [wsX, weX].forEach(function (x) {
         ctx.beginPath();
         ctx.moveTo(x, L.plotY);
-        ctx.lineTo(x, L.plotY + L.plotH);
+        ctx.lineTo(x, washBottom);
         ctx.stroke();
       });
       // Edge grab handles.
@@ -295,6 +323,8 @@
       ctx.stroke();
     }
 
+    if (this.hasSpeed) this.drawSpeedStrip(ctx, L, D, P, xOf, wsX, weX);
+
     // Crosshair + hover dot.
     if (this.hoverT !== null) {
       var hs = this.sampleAt(this.hoverT);
@@ -304,8 +334,22 @@
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(Math.round(hx) + 0.5, L.plotY);
-        ctx.lineTo(Math.round(hx) + 0.5, L.plotY + L.plotH);
+        ctx.lineTo(Math.round(hx) + 0.5,
+          this.hasSpeed ? L.speedY + L.speedH : L.plotY + L.plotH);
         ctx.stroke();
+        if (this.hasSpeed && this._speedYOf && hs.speed !== undefined &&
+            hs.speed !== null && hs.speed > 0.05) {
+          var sy = this._speedYOf(this.speedValue(hs.speed));
+          if (sy >= L.speedY - 2 && sy <= L.speedY + L.speedH + 2) {
+            ctx.beginPath();
+            ctx.arc(hx, sy, 3.5, 0, Math.PI * 2);
+            ctx.fillStyle = P.speed;
+            ctx.fill();
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = P.surface;
+            ctx.stroke();
+          }
+        }
         var hy = yOf(hs.hr);
         var inWin = st && hs.t >= st.windowStart && hs.t <= st.windowStart + st.windowLen;
         ctx.beginPath();
@@ -363,8 +407,14 @@
       ctx.moveTo(x, L.plotY);
       ctx.lineTo(x, L.plotY + L.plotH);
       ctx.stroke();
+      if (this.hasSpeed) {
+        ctx.beginPath();
+        ctx.moveTo(x, L.speedY);
+        ctx.lineTo(x, L.speedY + L.speedH);
+        ctx.stroke();
+      }
       ctx.fillStyle = P.muted;
-      ctx.fillText(fmtElapsed(t - D.tMin), x, L.plotY + L.plotH + 8);
+      ctx.fillText(fmtElapsed(t - D.tMin), x, L.bottomY + 8);
     }
 
     // Axis baseline.
@@ -373,6 +423,160 @@
     ctx.moveTo(L.plotX, Math.round(L.plotY + L.plotH) + 0.5);
     ctx.lineTo(L.plotX + L.plotW, Math.round(L.plotY + L.plotH) + 0.5);
     ctx.stroke();
+  };
+
+  // Slim pace/speed strip below the HR plot. Up = faster in both modes.
+  // Segments deviating more than DEV_TOL from the window median are amber.
+  ATChart.prototype.drawSpeedStrip = function (ctx, L, D, P, xOf, wsX, weX) {
+    var self = this;
+    var s = this.samples;
+    var st = this.state;
+
+    // Per-sample displayed values, then a rolling median (~15 samples): raw
+    // per-second deltas (especially distance-derived ones) are heavily
+    // quantized, and the strip should show pacing, not quantization noise.
+    var raw = new Array(s.length);
+    for (var r = 0; r < s.length; r++) {
+      var rsp = s[r].speed;
+      raw[r] = (rsp === undefined || rsp === null || rsp <= 0.3) ? null : this.speedValue(rsp);
+    }
+    var smooth = new Array(s.length);
+    var HALF = 7;
+    for (var m = 0; m < s.length; m++) {
+      if (raw[m] === null) { smooth[m] = null; continue; }
+      var windowVals = [];
+      for (var q = Math.max(0, m - HALF); q <= Math.min(s.length - 1, m + HALF); q++) {
+        if (raw[q] !== null) windowVals.push(raw[q]);
+      }
+      windowVals.sort(function (a, b) { return a - b; });
+      smooth[m] = windowVals[windowVals.length >> 1];
+    }
+
+    var vals = [];
+    var winVals = [];
+    for (var i = 0; i < s.length; i++) {
+      if (smooth[i] === null) continue;
+      vals.push(smooth[i]);
+      if (st && s[i].t >= st.windowStart && s[i].t < st.windowStart + st.windowLen) winVals.push(smooth[i]);
+    }
+    if (vals.length < 10) return;
+    vals.sort(function (a, b) { return a - b; });
+    var lo = vals[Math.floor(vals.length * 0.05)];
+    var hi = vals[Math.floor(vals.length * 0.95)];
+    if (hi - lo < 1e-6) { hi = lo + 1; }
+    var pad = (hi - lo) * 0.25;
+    lo -= pad; hi += pad;
+
+    // Up = faster: km/h maps normally, pace (s/km) inverts.
+    var invert = this.speedMode === 'pace';
+    var yOfV = function (v) {
+      var f = (v - lo) / (hi - lo);
+      f = Math.max(0, Math.min(1, f));
+      return invert ? L.speedY + f * L.speedH : L.speedY + (1 - f) * L.speedH;
+    };
+    this._speedYOf = yOfV;
+
+    // Median of the window (or whole activity when no window).
+    var medArr = winVals.length >= 10 ? winVals.slice() : vals.slice();
+    medArr.sort(function (a, b) { return a - b; });
+    var median = medArr[medArr.length >> 1];
+
+    // Panel frame line + title + two tick labels.
+    ctx.strokeStyle = P.axis;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(L.plotX, Math.round(L.speedY + L.speedH) + 0.5);
+    ctx.lineTo(L.plotX + L.plotW, Math.round(L.speedY + L.speedH) + 0.5);
+    ctx.stroke();
+    ctx.font = '10px system-ui, -apple-system, "Segoe UI", sans-serif';
+    ctx.fillStyle = P.muted;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(this.speedMode === 'pace' ? 'pace (min/km)' : 'speed (km/h)',
+      L.plotX + 2, L.speedY - 2);
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    var topVal = invert ? lo : hi;
+    var botVal = invert ? hi : lo;
+    ctx.fillText(this.fmtSpeedVal(topVal), L.plotX - 6, L.speedY + 5);
+    ctx.fillText(this.fmtSpeedVal(botVal), L.plotX - 6, L.speedY + L.speedH - 5);
+
+    var drawPath = function () {
+      ctx.beginPath();
+      var prevT = null;
+      for (var j = 0; j < s.length; j++) {
+        if (smooth[j] === null) { prevT = null; continue; }
+        var x = xOf(s[j].t), y = yOfV(smooth[j]);
+        if (prevT === null || s[j].t - prevT > 60) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+        prevT = s[j].t;
+      }
+    };
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+
+    var stripTop = L.speedY - 2, stripBot = L.speedY + L.speedH + 2;
+    if (st && wsX !== null) {
+      // Outside the window: muted.
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(L.plotX, stripTop, Math.max(wsX - L.plotX, 0), stripBot - stripTop);
+      ctx.rect(weX, stripTop, Math.max(L.plotX + L.plotW - weX, 0), stripBot - stripTop);
+      ctx.clip();
+      drawPath();
+      ctx.strokeStyle = P.outside;
+      ctx.stroke();
+      ctx.restore();
+
+      // Median guide across the window.
+      var medY = yOfV(median);
+      ctx.save();
+      ctx.strokeStyle = P.speed;
+      ctx.globalAlpha = 0.45;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 4]);
+      ctx.beginPath();
+      ctx.moveTo(wsX, medY);
+      ctx.lineTo(weX, medY);
+      ctx.stroke();
+      ctx.restore();
+
+      // Inside, within ±DEV_TOL of the median: normal green.
+      var bandA = yOfV(median * (1 + DEV_TOL));
+      var bandB = yOfV(median * (1 - DEV_TOL));
+      var bandTop = Math.min(bandA, bandB), bandBot = Math.max(bandA, bandB);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(wsX, bandTop, weX - wsX, bandBot - bandTop);
+      ctx.clip();
+      drawPath();
+      ctx.strokeStyle = P.speed;
+      ctx.stroke();
+      ctx.restore();
+
+      // Inside, deviating: amber, slightly heavier.
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(wsX, stripTop, weX - wsX, Math.max(bandTop - stripTop, 0));
+      ctx.rect(wsX, bandBot, weX - wsX, Math.max(stripBot - bandBot, 0));
+      ctx.clip();
+      ctx.lineWidth = 2;
+      drawPath();
+      ctx.strokeStyle = P.deviate;
+      ctx.stroke();
+      ctx.restore();
+    } else {
+      drawPath();
+      ctx.strokeStyle = P.speed;
+      ctx.stroke();
+    }
+  };
+
+  ATChart.prototype.fmtSpeedVal = function (v) {
+    if (this.speedMode === 'speed') return v.toFixed(1);
+    var sec = Math.round(v);
+    return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
   };
 
   // ---- interaction -------------------------------------------------------
@@ -507,6 +711,20 @@
       hrRow.appendChild(delta);
     }
     tt.appendChild(hrRow);
+
+    if (this.hasSpeed && hs.speed !== undefined && hs.speed !== null && hs.speed > 0.05) {
+      var spRow = document.createElement('div');
+      spRow.className = 'atv-tooltip-value';
+      var spKey = document.createElement('span');
+      spKey.className = 'atv-tooltip-key speed';
+      spRow.appendChild(spKey);
+      var spStrong = document.createElement('strong');
+      spStrong.textContent = this.speedMode === 'speed'
+        ? (hs.speed * 3.6).toFixed(1) + ' km/h'
+        : this.fmtSpeedVal(1000 / hs.speed) + ' /km';
+      spRow.appendChild(spStrong);
+      tt.appendChild(spRow);
+    }
 
     tt.hidden = false;
     var rect = this.container.getBoundingClientRect();

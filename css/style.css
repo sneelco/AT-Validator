@@ -12,6 +12,7 @@
   --border: rgba(11, 11, 11, 0.10);
   --series-1: #2a78d6;
   --series-outside: #b9b7ae;
+  --series-speed: #008300;
   --status-good: #0ca30c;
   --status-critical: #d03b3b;
   --good-text: #006300;
@@ -37,6 +38,7 @@
     --border: rgba(255, 255, 255, 0.10);
     --series-1: #3987e5;
     --series-outside: #575651;
+    --series-speed: #00a000;
     --status-good: #0ca30c;
     --status-critical: #e66767;
     --good-text: #0ca30c;
@@ -193,8 +195,21 @@ body {
   padding: 12px 12px 14px;
   margin-bottom: 26px;
 }
-.chart-hint { color: var(--text-muted); font-size: 12px; margin: 2px 6px 8px; }
+.chart-hint-row { display: flex; align-items: flex-start; gap: 12px; }
+.chart-hint { color: var(--text-muted); font-size: 12px; margin: 2px 6px 8px; flex: 1; }
+.speed-toggle {
+  display: flex; margin: 0 6px;
+  border: 1px solid var(--border); border-radius: 7px; overflow: hidden;
+}
+.speed-toggle button {
+  font: 600 11.5px system-ui, -apple-system, "Segoe UI", sans-serif;
+  padding: 3px 10px; border: none; cursor: pointer;
+  background: var(--surface-1); color: var(--text-muted);
+}
+.speed-toggle button.active { background: var(--window-wash); color: var(--series-1); }
 .chart-flex { display: flex; align-items: stretch; height: 380px; }
+.chart-flex.with-speed { height: 456px; }
+.chart-flex.with-speed .baseline-col { padding-bottom: 110px; }
 .baseline-col {
   display: flex;
   /* match the chart's plot margins so the slider spans the y-axis exactly */
@@ -247,6 +262,7 @@ body {
 .atv-tooltip-key { width: 14px; height: 0; border-top: 2.5px solid var(--series-1); border-radius: 2px; }
 .atv-tooltip-key.over { border-top-color: var(--status-critical); }
 .atv-tooltip-key.outside { border-top-color: var(--series-outside); }
+.atv-tooltip-key.speed { border-top-color: var(--series-speed); }
 .atv-tooltip-delta { color: var(--text-muted); }
 
 .slider-row { display: flex; align-items: center; gap: 14px; padding: 6px 6px 0; }
@@ -290,5 +306,6 @@ h2 { font-size: 17px; margin: 26px 0 12px; }
 
 @media (max-width: 640px) {
   .chart-flex { height: 300px; }
+  .chart-flex.with-speed { height: 376px; }
   .settings-actions { margin-left: 0; }
 }

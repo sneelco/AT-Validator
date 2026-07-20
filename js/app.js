@@ -32,7 +32,8 @@
    'set-window', 'set-threshold', 'set-split', 'set-smooth', 'reset-settings',
    'analysis-section', 'load-error', 'slider-row',
    'baseline-slider', 'baseline-readout', 'baseline-reset', 'baseline-warning',
-   'apply-detected', 'file-details', 'file-details-pre'
+   'apply-detected', 'file-details', 'file-details-pre',
+   'speed-toggle', 'mode-pace', 'mode-speed'
   ].forEach(function (id) { els[id] = document.getElementById(id); });
 
   var chart = new window.ATV.chart.ATChart(els.chart, {
@@ -135,7 +136,12 @@
     });
     state.hrRange = [hrLo, hrHi];
     fitWindowToActivity();
+    // Cycling reads naturally in km/h; foot sports in min/km.
+    setSpeedMode(state.meta.sports.some(function (n) { return /cycling|biking/i.test(n); })
+      ? 'speed' : 'pace');
     chart.setData(state.samples, state.absoluteT0);
+    els['chart'].parentElement.classList.toggle('with-speed', chart.hasSpeed);
+    els['speed-toggle'].hidden = !chart.hasSpeed;
     els['analysis-section'].hidden = false;
     refresh();
     els['analysis-section'].scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -571,6 +577,16 @@
     state.baselineOverride = null;
     refresh();
   });
+  function setSpeedMode(mode) {
+    chart.setSpeedMode(mode);
+    els['mode-pace'].classList.toggle('active', mode === 'pace');
+    els['mode-pace'].setAttribute('aria-pressed', String(mode === 'pace'));
+    els['mode-speed'].classList.toggle('active', mode === 'speed');
+    els['mode-speed'].setAttribute('aria-pressed', String(mode === 'speed'));
+  }
+  els['mode-pace'].addEventListener('click', function () { setSpeedMode('pace'); });
+  els['mode-speed'].addEventListener('click', function () { setSpeedMode('speed'); });
+
   els['apply-detected'].addEventListener('click', function () {
     if (!state.detected || state.detected.confidence === 'none') return;
     state.baselineOverride = null;
