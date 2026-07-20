@@ -557,5 +557,71 @@ function buildPelotonFit() {
     f && f.text.slice(0, 80));
 }
 
+// ---- window-bounds regression (warm-up/cooldown must not leak) ------------
+console.log('window bounds');
+
+// 10-min slow warm-up ramp + 60-min window with CONSTANT speed and HR halves
+// drifting ~+4.5% + 10-min cooldown walk. Pa:HR must agree with HR-only and
+// the surrounding ramp/walk must have zero effect on either number.
+function boundsFixture(speedStep) {
+  const samples = [];
+  for (let t = 0; t <= 4800; t++) {
+    let hr, speed;
+    if (t < 600) { hr = 100 + 38 * t / 600; speed = 1.2 + 1.6 * t / 600; }
+    else if (t < 4200) {
+      const w = (t - 600) / 3600;
+      hr = 138 * (1 + 0.09 * w);                    // halves drift ≈ +4.4%
+      speed = (speedStep && t >= 2400) ? 2.8 * 1.03 : 2.8;
+    } else { hr = 120 - 20 * (t - 4200) / 600; speed = 1.1; }
+    samples.push({ t, hr, speed });
+  }
+  return samples;
+}
+const TRUST = { speedTrust: { trusted: true, source: 'equipment', label: 'belt', reason: 'belt' } };
+
+{
+  const samples = boundsFixture(false);
+  const r = analyzeWindow(samples, 600, SET);
+  const ev = evaluate(samples, r, TRUST);
+  check('bounds: hr drift ~4.4%', r.driftPct > 4.0 && r.driftPct < 4.9, r.driftPct.toFixed(2));
+  check('bounds: Pa:HR agrees with HR-only', Math.abs(ev.primary.value - r.driftPct) < 1,
+    `paHr-equivalent ${ev.primary.value.toFixed(2)} vs drift ${r.driftPct.toFixed(2)}`);
+  check('bounds: pa:hr stays primary', ev.primary.method === 'pa:hr', ev.primary.method);
+  check('bounds: NO disagreement warning', !ev.findings.some(f => f.code === 'speed-hr-disagree'));
+  check('bounds: no pace-slowed warning', !ev.findings.some(f => f.code === 'pace-slowed'));
+
+  // The strong form: strip the warm-up and cooldown entirely — every number
+  // must be identical, proving they never entered the computation.
+  const trimmed = samples.filter(x => x.t >= 600 && x.t < 4200);
+  const rt = analyzeWindow(trimmed, 600, SET);
+  const evt = evaluate(trimmed, rt, TRUST);
+  check('bounds: warm-up/cooldown inert (Pa:HR)',
+    Math.abs(ev.primary.value - evt.primary.value) < 0.01,
+    `${ev.primary.value.toFixed(3)} vs ${evt.primary.value.toFixed(3)}`);
+  check('bounds: warm-up/cooldown inert (HR drift)',
+    Math.abs(r.driftPct - rt.driftPct) < 0.01);
+}
+
+// Same fixture with a genuine +3% speed step at the window midpoint:
+// disagreement fires with the correct implied paces in the text.
+{
+  const samples = boundsFixture(true);
+  const r = analyzeWindow(samples, 600, SET);
+  const ev = evaluate(samples, r, Object.assign({ units: 'metric', displayMode: 'pace' }, TRUST));
+  const w = ev.findings.find(f => f.code === 'speed-hr-disagree');
+  check('step: disagreement warning fires', !!w);
+  check('step: falls back to hr-only', ev.primary.method === 'hr-only' &&
+    ev.primary.reason === 'disagreement');
+  // 1st half avg 2.8 m/s -> 1000/2.8 = 357 s = 5:57 /km; the +3% step covers
+  // the whole 2nd half -> 2.884 m/s -> 346.7 s -> 5:47 /km.
+  check('step: implied paces in text', w && w.text.includes('5:57') && w.text.includes('5:47'),
+    w && w.text);
+  check('step: pace unit in text', w && w.text.includes('/km'));
+  // imperial + speed mode variants format accordingly
+  const evMi = evaluate(samples, r, Object.assign({ units: 'imperial', displayMode: 'speed' }, TRUST));
+  const wMi = evMi.findings.find(f => f.code === 'speed-hr-disagree');
+  check('step: mph variant', wMi && wMi.text.includes('mph'), wMi && wMi.text);
+}
+
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nall tests passed');
 process.exit(failures ? 1 : 0);

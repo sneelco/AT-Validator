@@ -474,12 +474,17 @@
       if (st && s[i].t >= st.windowStart && s[i].t < st.windowStart + st.windowLen) winVals.push(smooth[i]);
     }
     if (vals.length < 10) return;
-    vals.sort(function (a, b) { return a - b; });
-    var lo = vals[Math.floor(vals.length * 0.05)];
-    var hi = vals[Math.floor(vals.length * 0.95)];
+    // Scale the axis to the ANALYSIS WINDOW's pace range, not the whole
+    // activity — otherwise a cooldown walk compresses the axis until
+    // in-window drift is invisible. Out-of-window segments clamp to the edge.
+    var domainVals = winVals.length >= 10 ? winVals.slice() : vals.slice();
+    domainVals.sort(function (a, b) { return a - b; });
+    var lo = domainVals[Math.floor(domainVals.length * 0.05)];
+    var hi = domainVals[Math.floor(domainVals.length * 0.95)];
     if (hi - lo < 1e-6) { hi = lo + 1; }
-    var pad = (hi - lo) * 0.25;
+    var pad = Math.max((hi - lo) * 0.25, hi * 0.025);
     lo -= pad; hi += pad;
+    vals.sort(function (a, b) { return a - b; });
 
     // Up = faster: km/h maps normally, pace (s/km) inverts.
     var invert = this.speedMode === 'pace';

@@ -465,12 +465,15 @@
       }
       if (!secondary) secondary = { value: paHr, method: 'pa:hr', untrusted: !speedTrusted };
       var speedChange = 100 * (h2.avgSpeed / h1.avgSpeed - 1);
+      // Include the computed half averages so the claim can be eyeballed
+      // against the chart — a bare percentage is not checkable.
+      var halves = fmtHalfSpeeds(h1.avgSpeed, h2.avgSpeed, settings.units, settings.displayMode);
       findings.push({ severity: 'warning', code: 'speed-hr-disagree',
         text: 'Pa:HR (' + (paHr >= 0 ? '+' : '') + paHr.toFixed(1) + '%) and HR-only drift (' +
           (hrOnly >= 0 ? '+' : '') + hrOnly.toFixed(1) + '%) disagree by ' +
           Math.abs(paHr - hrOnly).toFixed(1) + ' points — the speed channel implies the second ' +
           'half was ' + Math.abs(speedChange).toFixed(1) + '% ' +
-          (speedChange < 0 ? 'slower' : 'faster') + ' than the first. Either pace genuinely ' +
+          (speedChange < 0 ? 'slower' : 'faster') + ' (' + halves + '). Either pace genuinely ' +
           'changed that much or the speed data is bad; the verdict falls back to HR-only drift.' });
     }
 
@@ -638,6 +641,18 @@
       }
     }
     return null;
+  }
+
+  // "9:05 \u2192 8:41 /mi" (pace) or "11.2 \u2192 11.5 mph" (speed) for the
+  // 1st- and 2nd-half average speeds, in the caller's display units.
+  function fmtHalfSpeeds(v1, v2, units, displayMode) {
+    var imperial = units === 'imperial';
+    if (displayMode === 'speed') {
+      var f = imperial ? 2.236936 : 3.6;
+      return (v1 * f).toFixed(1) + ' \u2192 ' + (v2 * f).toFixed(1) + (imperial ? ' mph' : ' km/h');
+    }
+    var per = imperial ? 1609.344 : 1000;
+    return fmtMinSec(per / v1) + ' \u2192 ' + fmtMinSec(per / v2) + (imperial ? ' /mi' : ' /km');
   }
 
   function fmtMinSec(sec) {
