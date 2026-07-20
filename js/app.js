@@ -219,7 +219,9 @@
     var ev = analysis.evaluate(s, result, {
       baselineOverride: state.baselineOverride,
       detectedBaseline: detectedBaseline(),
-      speedTrust: state.speedTrust
+      speedTrust: state.speedTrust,
+      units: state.units,
+      displayMode: chart.speedMode
     });
 
     renderSlider(winLen);
@@ -287,9 +289,11 @@
     if (!cf) { warn.hidden = true; return; }
     if (winLen < set.windowMin * 60 - 1) cf.verdict = 'insufficient';
     var cfEv = analysis.evaluate(state.samples, cf,
-      { detectedBaseline: det, speedTrust: state.speedTrust });
+      { detectedBaseline: det, speedTrust: state.speedTrust,
+        units: state.units, displayMode: chart.speedMode });
     var curEv = analysis.evaluate(state.samples, r,
-      { detectedBaseline: det, speedTrust: state.speedTrust });
+      { detectedBaseline: det, speedTrust: state.speedTrust,
+        units: state.units, displayMode: chart.speedMode });
     var name = cfEv.verdict === 'insufficient' ? 'INSUFFICIENT' : BAND_NAMES[cfEv.band];
     var rise = cfEv.primary ? ' (' + fmtSigned(cfEv.primary.value, 1) + '%)' : '';
     warn.appendChild(document.createTextNode(
@@ -368,8 +372,8 @@
         'your current ceiling, that would be evidence for raising it.';
     }
     if (ev.band === 'amber') {
-      return 'Retest starting slightly slower \u2014 settle a few bpm below ' + base +
-        ' and hold; a clean flat hour settles it.';
+      return 'Retest at your suspected AeT heart rate, settling slightly conservative, ' +
+        'and hold the pace \u2014 a clean flat hour settles it.';
     }
     return 'The effort started above threshold \u2014 retest at a lower settled heart rate (below ' +
       base + ' bpm).';
