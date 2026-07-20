@@ -321,6 +321,89 @@
 
   var SEVERITY_RANK = { warning: 0, caveat: 1, info: 2 };
 
+  /*
+   * Speed-source trust matrix, keyed on file provenance rather than sport:
+   * a treadmill FIT written by Peloton carries true belt speed; the same
+   * workout recorded natively on a watch carries a wrist-accelerometer
+   * estimate. IDs are from the official FIT SDK profile.
+   */
+  var SPEED_EQUIPMENT_IDS = {
+    340: 1,  // Peloton
+    111: 1,  // Technogym
+    266: 1,  // Precor
+    85: 1,   // Woodway
+    56: 1,   // Star Trac
+    314: 1,  // True Fitness
+    122: 1,  // Johnson Health Tech
+    40: 1,   // Concept2
+    73: 1,   // Wattbike
+    260: 1,  // Zwift (trainer-derived virtual speed)
+    89: 1,   // Tacx
+    67: 1,   // Bkool
+    121: 1,  // Kinetic
+    282: 1   // The Sufferfest
+  };
+
+  function assessSpeedTrust(provenance) {
+    if (!provenance) {
+      return { trusted: false, source: 'unknown', label: 'unknown speed source',
+        reason: 'no recording-device metadata in this file' };
+    }
+    if (provenance.manufacturerId !== null && provenance.manufacturerId !== undefined &&
+        SPEED_EQUIPMENT_IDS[provenance.manufacturerId]) {
+      var maker = provenance.manufacturer || 'fitness equipment';
+      return { trusted: true, source: 'equipment',
+        label: 'belt/machine speed (' + maker + ')',
+        reason: 'written by ' + maker + ', which reports true belt/machine speed' };
+    }
+    if (provenance.hasGps) {
+      return { trusted: true, source: 'gps', label: 'GPS',
+        reason: 'outdoor activity with GPS fixes' };
+    }
+    if (provenance.manufacturer) {
+      return { trusted: false, source: 'watch-estimate',
+        label: 'watch estimate (accelerometer)',
+        reason: 'indoor recording by ' + provenance.manufacturer +
+          ' — speed is a wrist-accelerometer estimate, not measured' };
+    }
+    return { trusted: false, source: 'unknown', label: 'unknown speed source',
+      reason: 'unrecognized recording device' +
+        (provenance.manufacturerId !== null && provenance.manufacturerId !== undefined
+          ? ' (manufacturer #' + provenance.manufacturerId + ')' : '') +
+        ' and no GPS fixes' };
+  }
+
+  /*
+   * Some equipment (Peloton among them) writes no per-record speed, only
+   * cumulative distance. Derive speed in place from distance deltas so the
+   * decoupling math has a channel to work with; the derived speed inherits
+   * the distance channel's provenance. Returns the number of samples filled.
+   */
+  function deriveSpeedFromDistance(samples) {
+    if (!samples || samples.length < 2) return 0;
+    var withSpeed = 0, withDist = 0;
+    for (var i = 0; i < samples.length; i++) {
+      if (samples[i].speed !== undefined && samples[i].speed !== null) withSpeed++;
+      if (samples[i].distance !== undefined && samples[i].distance !== null) withDist++;
+    }
+    // Only derive when the speed channel is essentially absent but distance is rich.
+    if (withSpeed > samples.length * 0.2 || withDist < samples.length * 0.8) return 0;
+    var filled = 0;
+    for (var j = 0; j < samples.length; j++) {
+      var a = samples[j];
+      var b = samples[Math.min(j + 1, samples.length - 1)];
+      if (j === samples.length - 1) { a = samples[j - 1]; b = samples[j]; }
+      if (a.distance === undefined || b.distance === undefined) continue;
+      var dt = b.t - a.t;
+      if (dt <= 0 || dt > MAX_GAP) continue;
+      var ds = b.distance - a.distance;
+      if (ds < 0) continue;
+      samples[j].speed = ds / dt;
+      filled++;
+    }
+    return filled;
+  }
+
   function evaluate(samples, result, settings) {
     try {
       return evaluateInner(samples, result, settings || {});
@@ -344,7 +427,8 @@
     // Pa:HR needs speed that both exists and can be believed: treadmill /
     // indoor "speed" is a wrist-accelerometer estimate, not belt speed, and a
     // large disagreement with the HR trace voids it from either source.
-    var speedTrusted = settings.speedTrusted !== false;
+    var trust = settings.speedTrust || null;
+    var speedTrusted = trust ? !!trust.trusted : settings.speedTrusted !== false;
     var hrOnly = result.driftPct !== null ? result.driftPct : 0;
     var speedOk = result.window.speedCoverage > E.SPEED_COVERAGE_MIN &&
       h1 && h2 && h1.avgSpeed !== null && h2.avgSpeed !== null &&
@@ -362,9 +446,11 @@
     } else if (!speedTrusted) {
       primary = { value: hrOnly, method: 'hr-only', reason: 'untrusted-speed' };
       secondary = { value: paHr, method: 'pa:hr', untrusted: true };
+      var why = trust
+        ? 'Speed here is a ' + trust.label + ' — ' + trust.reason
+        : 'Indoor/treadmill activity — watch "speed" is a wrist-accelerometer estimate, not belt speed';
       findings.push({ severity: 'info', code: 'speed-untrusted',
-        text: 'Indoor/treadmill activity — watch "speed" is a wrist-accelerometer estimate, not ' +
-          'belt speed, so the verdict uses HR-only drift. Estimated-pace decoupling (' +
+        text: why + '. The verdict uses HR-only drift; estimated-pace decoupling (' +
           (paHr >= 0 ? '+' : '') + paHr.toFixed(1) + '%) is shown for reference only.' });
     } else {
       primary = { value: paHr, method: 'pa:hr' };
@@ -562,6 +648,8 @@
 
   var api = { rangeStats: rangeStats, analyzeWindow: analyzeWindow, lowerBound: lowerBound,
     detectBaseline: detectBaseline, evaluate: evaluate,
+    assessSpeedTrust: assessSpeedTrust, deriveSpeedFromDistance: deriveSpeedFromDistance,
+    SPEED_EQUIPMENT_IDS: SPEED_EQUIPMENT_IDS,
     PLATEAU: PLATEAU, EVAL: EVAL, MAX_GAP: MAX_GAP };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   global.ATV = global.ATV || {};

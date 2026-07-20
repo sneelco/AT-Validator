@@ -35,7 +35,12 @@
       if (t >= 5100) speed = Math.max(speed - (t - 5100) / 300 * 1.6, 1.2); // cool-down jog
       records.push({ t: t0 + t, hr: Math.round(base + hrNoise), speed: +speed.toFixed(3) });
     }
-    return { records: records, sports: ['Running (demo)'] };
+    return {
+      records: records,
+      sports: ['Running (demo)'],
+      provenance: { manufacturerId: null, manufacturer: null, productId: null,
+        product: null, sport: 'Running', subSport: null, hasGps: true }
+    };
   }
 
   var api = { generateDemo: generateDemo };

@@ -8,7 +8,8 @@ const fs = require('fs');
 const path = require('path');
 const { parseFit } = require('../js/fit-parser.js');
 const { parseCsv } = require('../js/csv-parser.js');
-const { analyzeWindow, rangeStats, detectBaseline, evaluate, EVAL } = require('../js/analysis.js');
+const { analyzeWindow, rangeStats, detectBaseline, evaluate, EVAL,
+  assessSpeedTrust, deriveSpeedFromDistance } = require('../js/analysis.js');
 
 let failures = 0;
 function check(name, cond, detail) {
@@ -445,6 +446,115 @@ console.log('speed trust');
   const indoor = loadFit('sample-activity-indoor-trainer.fit');
   check('flags: indoor trainer no GPS', indoor.hasGps === false);
   check('flags: subSports exposed', Array.isArray(indoor.subSports));
+}
+
+// ---- provenance & speed trust matrix --------------------------------------
+console.log('provenance');
+
+// Hand-crafted Peloton-style FIT: file_id(manufacturer=peloton, product_name),
+// session(running/treadmill), distance-only records (like the real Tread files).
+function buildPelotonFit() {
+  const parts = [];
+  const pName = 'HOME_TREAD';
+  // file_id def: type(0,1,enum) manufacturer(1,2,u16) product(2,2,u16) product_name(8,11,string)
+  parts.push([0x40, 0, 0, 0x00, 0x00, 4,
+    0, 1, 0x00,  1, 2, 0x84,  2, 2, 0x84,  8, pName.length + 1, 0x07]);
+  parts.push([0x00, 4, 340 & 0xFF, 340 >> 8, 10, 0,
+    ...Array.from(pName).map(c => c.charCodeAt(0)), 0]);
+  // session def: sport(5) subSport(6)
+  parts.push([0x41, 0, 0, 0x12, 0x00, 2, 5, 1, 0x00, 6, 1, 0x00]);
+  parts.push([0x01, 1, 1]); // running, treadmill
+  // record def: timestamp(253,4,u32) hr(3,1,u8) distance(5,4,u32 scale 100)
+  parts.push([0x42, 0, 0, 0x14, 0x00, 3, 253, 4, 0x86, 3, 1, 0x02, 5, 4, 0x86]);
+  const t0 = 1000000000;
+  for (let i = 0; i < 10; i++) {
+    const ts = t0 + i, dist = i * 280; // 2.8 m/s in cm
+    parts.push([0x02,
+      ts & 0xFF, (ts >> 8) & 0xFF, (ts >> 16) & 0xFF, (ts >> 24) & 0xFF,
+      120 + i,
+      dist & 0xFF, (dist >> 8) & 0xFF, (dist >> 16) & 0xFF, (dist >> 24) & 0xFF]);
+  }
+  const body = parts.flat();
+  const buf = Buffer.alloc(12 + body.length + 2);
+  buf[0] = 12; buf[1] = 0x10;
+  buf.writeUInt16LE(2132, 2);
+  buf.writeUInt32LE(body.length, 4);
+  buf.write('.FIT', 8);
+  Buffer.from(body).copy(buf, 12);
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+}
+
+{
+  const r = parseFit(buildPelotonFit());
+  const prov = r.provenance;
+  check('peloton fixture: manufacturer', prov.manufacturer === 'Peloton' && prov.manufacturerId === 340,
+    JSON.stringify(prov));
+  check('peloton fixture: product name string', prov.product === 'HOME_TREAD', prov.product);
+  check('peloton fixture: treadmill sub-sport', prov.subSport === 'Treadmill');
+  check('peloton fixture: no gps', prov.hasGps === false);
+  check('peloton fixture: distance parsed', r.records.every(x => x.distance !== undefined));
+  const trust = assessSpeedTrust(prov);
+  check('peloton fixture: speed TRUSTED (belt)', trust.trusted === true && trust.source === 'equipment');
+  check('peloton fixture: belt label', trust.label === 'belt/machine speed (Peloton)', trust.label);
+}
+
+// Real-file provenance (values verified against garmin-fit-sdk).
+{
+  const outdoor = loadFit('garmin-fenix-5-bike.fit');
+  check('fenix5: provenance Garmin Fenix 5', outdoor.provenance.manufacturer === 'Garmin' &&
+    outdoor.provenance.product === 'Fenix 5', JSON.stringify(outdoor.provenance));
+  const t1 = assessSpeedTrust(outdoor.provenance);
+  check('fenix5: GPS trusted', t1.trusted === true && t1.source === 'gps');
+
+  const indoor = loadFit('sample-activity-indoor-trainer.fit');
+  check('edge800: provenance Garmin Edge 800', indoor.provenance.product === 'Edge 800',
+    JSON.stringify(indoor.provenance));
+  const t2 = assessSpeedTrust(indoor.provenance);
+  check('edge800: indoor watch-estimate untrusted', t2.trusted === false && t2.source === 'watch-estimate');
+}
+
+// Trust matrix corner cases.
+{
+  const unknown = assessSpeedTrust({ manufacturerId: 9999, manufacturer: null, hasGps: false });
+  check('unknown maker: untrusted', unknown.trusted === false && unknown.source === 'unknown');
+  check('unknown maker: says why', unknown.reason.includes('9999'), unknown.reason);
+  const noProv = assessSpeedTrust(null);
+  check('no provenance: untrusted with reason', noProv.trusted === false && noProv.reason.length > 0);
+  const watchGps = assessSpeedTrust({ manufacturerId: 1, manufacturer: 'Garmin', hasGps: true });
+  check('garmin outdoor: GPS trusted', watchGps.trusted === true && watchGps.source === 'gps');
+}
+
+// deriveSpeedFromDistance: Peloton-style distance-only samples.
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) samples.push({ t, hr: 130, distance: t * 2.8 });
+  const filled = deriveSpeedFromDistance(samples);
+  check('derive: fills nearly all samples', filled > 3500, String(filled));
+  check('derive: ~2.8 m/s', Math.abs(samples[1800].speed - 2.8) < 0.01, String(samples[1800].speed));
+  // trusted belt speed + flat everything -> Pa:HR primary, green
+  const r = analyzeWindow(samples, 0, SET);
+  const ev = evaluate(samples, r, { speedTrust: { trusted: true, source: 'equipment',
+    label: 'belt/machine speed (Peloton)', reason: 'belt' } });
+  check('derive+trust: pa:hr primary', ev.primary.method === 'pa:hr', ev.primary.method);
+  check('derive+trust: band green', ev.band === 'green');
+  // does NOT derive when speed already present
+  const withSpeed = [];
+  for (let t = 0; t <= 100; t++) withSpeed.push({ t, hr: 130, speed: 2.0, distance: t * 2.8 });
+  check('derive: skips when speed exists', deriveSpeedFromDistance(withSpeed) === 0 &&
+    withSpeed[50].speed === 2.0);
+}
+
+// evaluate with a trust OBJECT (untrusted): finding text names the source.
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) samples.push({ t, hr: 140, speed: 3.0 * (1 - 0.06 * t / 3600) });
+  const r = analyzeWindow(samples, 0, SET);
+  const ev = evaluate(samples, r, { speedTrust: { trusted: false, source: 'watch-estimate',
+    label: 'watch estimate (accelerometer)', reason: 'indoor recording by Garmin' } });
+  check('trust-object: hr-only primary', ev.primary.method === 'hr-only');
+  const f = ev.findings.find(x => x.code === 'speed-untrusted');
+  check('trust-object: finding names source', f && f.text.includes('watch estimate (accelerometer)'),
+    f && f.text.slice(0, 80));
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nall tests passed');
