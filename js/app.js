@@ -16,10 +16,12 @@
   };
 
   var state = {
-    samples: [],       // { t: elapsed s, hr }
-    absoluteT0: null,  // unix s of first sample when known
-    meta: null,        // { name, sports, distance }
-    windowStart: 0,    // elapsed s
+    samples: [],           // { t: elapsed s, hr }
+    absoluteT0: null,      // unix s of first sample when known
+    meta: null,            // { name, sports, distance }
+    windowStart: 0,        // elapsed s
+    baselineOverride: null, // manual baseline (bpm), null = auto from window start
+    hrRange: null,         // [min, max] bpm of loaded activity
     settings: Object.assign({}, DEFAULTS)
   };
 
@@ -27,13 +29,15 @@
   ['dropzone', 'file-input', 'demo-btn', 'chart', 'window-slider', 'window-readout',
    'stats', 'splits-body', 'splits-table', 'verdict', 'activity-meta', 'settings-form',
    'set-window', 'set-threshold', 'set-split', 'set-smooth', 'reset-settings',
-   'analysis-section', 'load-error', 'slider-row'
+   'analysis-section', 'load-error', 'slider-row',
+   'baseline-slider', 'baseline-readout', 'baseline-reset'
   ].forEach(function (id) { els[id] = document.getElementById(id); });
 
   var chart = new window.ATV.chart.ATChart(els.chart, {
     onWindowChange: function (startT, lenS, resized) {
       var s = state.samples;
       if (!s.length) return;
+      state.baselineOverride = null; // window moved: baseline returns to auto
       if (resized) {
         var lenMin = Math.round(lenS / 60);
         if (lenMin >= 5) {
@@ -108,6 +112,13 @@
       distance: last && last.distance !== undefined ? last.distance : null
     };
     state.windowStart = 0;
+    state.baselineOverride = null;
+    var hrLo = Infinity, hrHi = -Infinity;
+    state.samples.forEach(function (r) {
+      if (r.hr < hrLo) hrLo = r.hr;
+      if (r.hr > hrHi) hrHi = r.hr;
+    });
+    state.hrRange = [hrLo, hrHi];
     fitWindowToActivity();
     chart.setData(state.samples, state.absoluteT0);
     els['analysis-section'].hidden = false;
@@ -143,7 +154,8 @@
       thresholdPct: set.thresholdPct,
       splitLen: set.splitMin * 60,
       smoothSec: set.smoothSec,
-      endSec: Math.min(set.endSec, winLen / 4)
+      endSec: Math.min(set.endSec, winLen / 4),
+      baselineOverride: state.baselineOverride
     });
     if (!result) return;
 
@@ -159,6 +171,7 @@
     });
 
     renderSlider(winLen);
+    renderBaseline(result);
     renderMeta();
     renderVerdict(result);
     renderStats(result);
@@ -173,6 +186,17 @@
     els['window-slider'].value = Math.round(state.windowStart);
     els['window-readout'].textContent =
       'Window: ' + fmtElapsed(state.windowStart) + ' – ' + fmtElapsed(state.windowStart + winLen);
+  }
+
+  function renderBaseline(r) {
+    var manual = state.baselineOverride !== null;
+    var slider = els['baseline-slider'];
+    slider.min = Math.max(Math.floor(state.hrRange[0]) - 5, 30);
+    slider.max = Math.ceil(state.hrRange[1]) + 5;
+    slider.value = Math.round(r.baseline);
+    els['baseline-readout'].textContent =
+      'Baseline ' + Math.round(r.baseline) + ' bpm — ' + (manual ? 'manual' : 'auto (window start)');
+    els['baseline-reset'].hidden = !manual;
   }
 
   function renderMeta() {
@@ -228,8 +252,10 @@
 
   function renderStats(r) {
     var tiles = [
-      { label: 'Start HR (baseline)', value: Math.round(r.baseline), unit: 'bpm',
-        sub: 'first ' + state.settings.smoothSec + ' s of window' },
+      { label: 'Baseline HR', value: Math.round(r.baseline), unit: 'bpm',
+        sub: state.baselineOverride !== null
+          ? 'manual (slider)'
+          : 'auto: first ' + state.settings.smoothSec + ' s of window' },
       { label: 'Threshold (+' + state.settings.thresholdPct + '%)', value: Math.round(r.threshold),
         unit: 'bpm', sub: 'limit for the window' },
       { label: 'End-of-window rise', value: r.endRisePct !== null ? fmtSigned(r.endRisePct, 1) : '—',
@@ -355,11 +381,22 @@
 
   els['window-slider'].addEventListener('input', function () {
     state.windowStart = +this.value;
+    state.baselineOverride = null; // window moved: baseline returns to auto
+    refresh();
+  });
+
+  els['baseline-slider'].addEventListener('input', function () {
+    state.baselineOverride = +this.value;
+    refresh();
+  });
+  els['baseline-reset'].addEventListener('click', function () {
+    state.baselineOverride = null;
     refresh();
   });
 
   function readSettings() {
     var w = clamp(+els['set-window'].value || DEFAULTS.windowMin, 5, 600);
+    if (w !== state.settings.windowMin) state.baselineOverride = null;
     var t = clamp(+els['set-threshold'].value || DEFAULTS.thresholdPct, 0.5, 25);
     var sp = clamp(+els['set-split'].value || DEFAULTS.splitMin, 1, 120);
     var sm = clamp(+els['set-smooth'].value || DEFAULTS.smoothSec, 5, 600);
@@ -376,6 +413,7 @@
   els['settings-form'].addEventListener('submit', function (e) { e.preventDefault(); });
   els['reset-settings'].addEventListener('click', function () {
     state.settings = Object.assign({}, DEFAULTS);
+    state.baselineOverride = null;
     els['set-window'].value = DEFAULTS.windowMin;
     els['set-threshold'].value = DEFAULTS.thresholdPct;
     els['set-split'].value = DEFAULTS.splitMin;

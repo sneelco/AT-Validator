@@ -139,6 +139,24 @@ const SET = { windowLen: 3600, thresholdPct: 5, splitLen: 600, smoothSec: 30, en
   check('gap: avg barely moved', r.window.avg < 141, `got ${r.window.avg.toFixed(2)}`);
 }
 
+// Manual baseline override: threshold and verdict follow the override.
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) samples.push({ t, hr: 150 });
+  const auto = analyzeWindow(samples, 0, SET);
+  check('override: auto verdict pass', auto.verdict === 'pass');
+  // Designate a lower target HR: flat 150 is +7.1% over a 140 baseline → fail.
+  const r = analyzeWindow(samples, 0, Object.assign({}, SET, { baselineOverride: 140 }));
+  check('override: baseline honored', close(r.baseline, 140));
+  check('override: threshold from override', close(r.threshold, 147, 0.01));
+  check('override: verdict fail', r.verdict === 'fail', r.verdict);
+  check('override: 100% over threshold', close(r.window.pctOver, 100, 0.01));
+  // Override above the data: everything under threshold again.
+  const r2 = analyzeWindow(samples, 0, Object.assign({}, SET, { baselineOverride: 160 }));
+  check('override high: verdict pass', r2.verdict === 'pass');
+  check('override high: 0% over', close(r2.window.pctOver, 0, 0.01));
+}
+
 // rangeStats half-open interval: sample at endT excluded.
 {
   const samples = [{ t: 0, hr: 100 }, { t: 10, hr: 200 }];

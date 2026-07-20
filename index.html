@@ -62,11 +62,22 @@
     </form>
 
     <div class="chart-card">
-      <div class="chart-hint">Drag the shaded window to move it · drag its edges to resize · arrow keys nudge (⇧ = 5&nbsp;min)</div>
-      <div id="chart" class="chart viz-root"></div>
+      <div class="chart-hint">Drag the shaded window to move it · drag its edges to resize · arrow keys nudge (⇧ = 5&nbsp;min) ·
+        vertical slider refines the baseline HR</div>
+      <div class="chart-flex">
+        <div class="baseline-col" title="Baseline heart rate">
+          <input id="baseline-slider" type="range" min="60" max="200" step="1" value="140"
+            aria-label="Baseline heart rate in beats per minute">
+        </div>
+        <div id="chart" class="chart viz-root"></div>
+      </div>
       <div id="slider-row" class="slider-row" hidden>
         <input id="window-slider" type="range" min="0" max="0" step="10" value="0" aria-label="Window start position">
         <span id="window-readout" class="window-readout"></span>
+      </div>
+      <div class="baseline-row">
+        <span id="baseline-readout" class="window-readout"></span>
+        <button id="baseline-reset" class="btn subtle small" type="button" hidden>Reset to auto</button>
       </div>
     </div>
 
