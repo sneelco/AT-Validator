@@ -1,5 +1,7 @@
 # Aerobic Threshold Validator
 
+**Live app: <https://sneelco.github.io/AT-Validator/>**
+
 Validate your aerobic threshold (AeT) from a Garmin activity file — entirely in
 your browser. No backend, no build step, no data ever leaves your machine.
 
@@ -43,8 +45,9 @@ verdict plus supporting statistics and splits.
 
 ## Using it
 
-Open the hosted page (see below), or just open `index.html` locally in any
-modern browser — there is nothing to install or build.
+Open the [hosted page](https://sneelco.github.io/AT-Validator/), or just open
+`index.html` locally in any modern browser — there is nothing to install or
+build.
 
 **Getting your file from Garmin Connect:** open the activity → gear icon →
 **Export Original**. Drop the downloaded zip (or the `.fit` inside it) onto the
@@ -60,17 +63,16 @@ inflates the apparent drift). The verdict compares the average heart rate of
 the final 5 minutes of the window against the baseline (the first 30 seconds of
 the window, averaged to smooth sensor noise).
 
-## Hosting on GitHub Pages (one-time setup)
+## Hosting on GitHub Pages
 
-The included workflow (`.github/workflows/deploy-pages.yml`) deploys the site
-automatically on every push to `main`. To turn it on:
+The site is hosted at <https://sneelco.github.io/AT-Validator/>. The included
+workflow (`.github/workflows/deploy-pages.yml`) runs the tests and redeploys it
+automatically on every push to `main` — no branches to manage and no build
+configuration.
 
-1. On GitHub, open the repository → **Settings** → **Pages**.
-2. Under **Build and deployment → Source**, choose **GitHub Actions**.
-3. Merge/push to `main`. The "Deploy to GitHub Pages" action runs the tests and
-   publishes the site at `https://<your-username>.github.io/AT-Validator/`.
-
-That's the whole setup — no branches to manage and no build configuration.
+If you fork this repo, turn Pages on once: **Settings** → **Pages** → under
+**Build and deployment → Source**, choose **GitHub Actions**. Your copy then
+deploys to `https://<your-username>.github.io/AT-Validator/`.
 
 ## Development
 
