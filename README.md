@@ -12,13 +12,22 @@ Based on the heart-rate drift field test popularized by coach Scott Johnston
 heart rate for **60 minutes** and see whether heart rate stays coupled to the
 work, or drifts away from it.
 
-**Primary metric — Pa:HR decoupling.** When the file carries speed data, the
-verdict is driven by aerobic decoupling: speed per heartbeat in the first half
-of the window vs the second half, as a percent decline. This is the standard
-decoupling formulation, and it self-corrects for small pace changes — slowing
-down to hold heart rate flat no longer flatters the result. Without speed data
-(e.g. a bare CSV), the tool falls back to HR-only drift (second-half average vs
-first-half average) and says so.
+**Primary metric — Pa:HR decoupling.** When the file carries *trustworthy*
+speed data, the verdict is driven by aerobic decoupling: speed per heartbeat in
+the first half of the window vs the second half, as a percent decline. This is
+the standard decoupling formulation, and it self-corrects for small pace
+changes — slowing down to hold heart rate flat no longer flatters the result.
+
+Speed is treated as **untrusted** on treadmill/indoor activities and in files
+with no GPS fixes — there the watch's "speed" is a wrist-accelerometer
+estimate, not belt speed — and the verdict falls back to HR-only drift
+(second-half average vs first-half average), with the estimated-pace decoupling
+shown for reference only. The same fallback fires from any source when Pa:HR
+and HR-only drift disagree by more than 2.5 percentage points: that much
+disagreement means either the pace genuinely changed by about that much
+(surfaced in the finding) or the speed channel is bad — either way Pa:HR can't
+be trusted as primary. Files with no speed at all (e.g. a bare CSV) use HR-only
+drift and say so.
 
 **Bands.** The decoupling percentage maps to a three-band verdict:
 

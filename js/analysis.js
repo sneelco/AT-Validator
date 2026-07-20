@@ -315,6 +315,7 @@
     BREAK_RISE_BPM: 3,         // sustained rise above plateau that counts as a break
     BREAK_SUSTAIN_SEC: 120,
     BREAK_ONSET_BPM: 0.5,      // backtrack from the crossing to where the rise began
+    XCHECK_DIFF_PCT: 2.5,      // Pa:HR vs HR-only disagreement that voids Pa:HR
     BASELINE_MISMATCH_BPM: 2
   };
 
@@ -340,20 +341,56 @@
     var findings = [];
 
     // ---- primary metric ---------------------------------------------------
-    var primary;
+    // Pa:HR needs speed that both exists and can be believed: treadmill /
+    // indoor "speed" is a wrist-accelerometer estimate, not belt speed, and a
+    // large disagreement with the HR trace voids it from either source.
+    var speedTrusted = settings.speedTrusted !== false;
+    var hrOnly = result.driftPct !== null ? result.driftPct : 0;
     var speedOk = result.window.speedCoverage > E.SPEED_COVERAGE_MIN &&
       h1 && h2 && h1.avgSpeed !== null && h2.avgSpeed !== null &&
       h1.avgSpeed > 0.1 && h1.avg > 0;
+    var paHr = null;
     if (speedOk) {
       var eff1 = h1.avgSpeed / h1.avg;
       var eff2 = h2.avgSpeed / h2.avg;
-      primary = { value: 100 * (eff1 - eff2) / eff1, method: 'pa:hr' };
+      paHr = 100 * (eff1 - eff2) / eff1;
+    }
+
+    var primary, secondary = null;
+    if (!speedOk) {
+      primary = { value: hrOnly, method: 'hr-only', reason: 'no-speed' };
+    } else if (!speedTrusted) {
+      primary = { value: hrOnly, method: 'hr-only', reason: 'untrusted-speed' };
+      secondary = { value: paHr, method: 'pa:hr', untrusted: true };
+      findings.push({ severity: 'info', code: 'speed-untrusted',
+        text: 'Indoor/treadmill activity — watch "speed" is a wrist-accelerometer estimate, not ' +
+          'belt speed, so the verdict uses HR-only drift. Estimated-pace decoupling (' +
+          (paHr >= 0 ? '+' : '') + paHr.toFixed(1) + '%) is shown for reference only.' });
     } else {
-      primary = { value: result.driftPct !== null ? result.driftPct : 0, method: 'hr-only' };
+      primary = { value: paHr, method: 'pa:hr' };
+    }
+
+    // Cross-check regardless of source: a large Pa:HR vs HR-only split means
+    // either pace really changed that much or the speed channel is bad —
+    // either way Pa:HR cannot be trusted as the primary.
+    if (speedOk && Math.abs(paHr - hrOnly) > E.XCHECK_DIFF_PCT) {
+      if (primary.method !== 'hr-only') {
+        primary = { value: hrOnly, method: 'hr-only', reason: 'disagreement' };
+      }
+      if (!secondary) secondary = { value: paHr, method: 'pa:hr', untrusted: !speedTrusted };
+      var speedChange = 100 * (h2.avgSpeed / h1.avgSpeed - 1);
+      findings.push({ severity: 'warning', code: 'speed-hr-disagree',
+        text: 'Pa:HR (' + (paHr >= 0 ? '+' : '') + paHr.toFixed(1) + '%) and HR-only drift (' +
+          (hrOnly >= 0 ? '+' : '') + hrOnly.toFixed(1) + '%) disagree by ' +
+          Math.abs(paHr - hrOnly).toFixed(1) + ' points — the speed channel implies the second ' +
+          'half was ' + Math.abs(speedChange).toFixed(1) + '% ' +
+          (speedChange < 0 ? 'slower' : 'faster') + ' than the first. Either pace genuinely ' +
+          'changed that much or the speed data is bad; the verdict falls back to HR-only drift.' });
     }
 
     if (result.verdict === 'insufficient') {
-      return { verdict: 'insufficient', band: null, confidence: 'low', findings: [], primary: primary };
+      return { verdict: 'insufficient', band: null, confidence: 'low', findings: [],
+        primary: primary, secondary: secondary };
     }
 
     var band = primary.value < E.AEROBIC_MAX_PCT ? 'green'
@@ -454,7 +491,8 @@
     if (findings.some(function (f) { return f.severity === 'caveat'; })) confidence = 'medium';
     if (findings.some(function (f) { return f.severity === 'warning'; })) confidence = 'low';
 
-    return { verdict: verdict, band: band, confidence: confidence, findings: findings, primary: primary };
+    return { verdict: verdict, band: band, confidence: confidence, findings: findings,
+      primary: primary, secondary: secondary };
   }
 
   // Coefficient of variation of smoothed pace (s per meter) over the window.

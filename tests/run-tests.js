@@ -302,17 +302,20 @@ function has(ev, code) { return ev.findings.some(f => f.code === code); }
   check('hot-start: Pa:HR used', ev.primary.method === 'pa:hr');
 }
 
-// Flat HR but second half 5% slower -> pace-slowed warning, low confidence,
-// and Pa:HR exposes the hidden drift as ~5% (amber) despite 0% HR drift.
+// Flat HR but second half 5% slower -> pace-slowed warning + the cross-check
+// fires (Pa:HR ~5% vs HR-only 0% disagree by >2.5 pts), so the verdict falls
+// back to HR-only with the Pa:HR number demoted to a secondary stat.
 {
   const samples = [];
   for (let t = 0; t <= 3600; t++) samples.push({ t, hr: 140, speed: t < 1800 ? 3.0 : 2.85 });
   const { ev } = run(samples);
-  check('slowdown: warning emitted', has(ev, 'pace-slowed'));
+  check('slowdown: pace warning emitted', has(ev, 'pace-slowed'));
+  check('slowdown: disagreement warning too', has(ev, 'speed-hr-disagree'));
   check('slowdown: confidence low', ev.confidence === 'low', ev.confidence);
-  check('slowdown: Pa:HR sees ~5%', ev.primary.value > 4 && ev.primary.value < 6,
-    ev.primary.value.toFixed(2));
-  check('slowdown: band amber (self-corrected)', ev.band === 'amber', ev.band);
+  check('slowdown: falls back to hr-only', ev.primary.method === 'hr-only' &&
+    ev.primary.reason === 'disagreement', ev.primary.method + '/' + ev.primary.reason);
+  check('slowdown: Pa:HR demoted to secondary ~5%', ev.secondary &&
+    ev.secondary.value > 4 && ev.secondary.value < 6, ev.secondary && ev.secondary.value.toFixed(2));
 }
 
 // Plateau-then-break at a known minute -> breakpoint within +/-2 min.
@@ -379,6 +382,69 @@ function has(ev, code) { return ev.findings.some(f => f.code === code); }
   const ev = evaluate(samples, r, {});
   check('insufficient: passed through', ev.verdict === 'insufficient' && ev.band === null);
   check('evaluate(garbage) no throw', evaluate(null, null, null).verdict === 'insufficient');
+}
+
+// ---- speed trust & cross-check --------------------------------------------
+console.log('speed trust');
+
+// Treadmill (no GPS): drifting accelerometer speed must not drive the verdict.
+// HR flat (green by HR-only); accelerometer "speed" decays 6% -> Pa:HR ~6%.
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) {
+    samples.push({ t, hr: 140, speed: 3.0 * (1 - 0.06 * t / 3600) });
+  }
+  const r = analyzeWindow(samples, 0, SET);
+  const ev = evaluate(samples, r, { speedTrusted: false });
+  check('treadmill: hr-only primary', ev.primary.method === 'hr-only');
+  check('treadmill: untrusted reason', ['untrusted-speed', 'disagreement'].includes(ev.primary.reason),
+    ev.primary.reason);
+  check('treadmill: band green (HR flat)', ev.band === 'green', ev.band);
+  check('treadmill: untrusted-speed finding', ev.findings.some(f => f.code === 'speed-untrusted'));
+  check('treadmill: secondary marked untrusted', ev.secondary && ev.secondary.untrusted === true);
+}
+
+// Outdoor with consistent GPS speed -> Pa:HR stays primary (trusted default).
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) samples.push({ t, hr: 140 + 4 * t / 3600, speed: 3.0 });
+  const r = analyzeWindow(samples, 0, SET);
+  const ev = evaluate(samples, r, { speedTrusted: true });
+  check('outdoor: pa:hr primary', ev.primary.method === 'pa:hr', ev.primary.method);
+  check('outdoor: no disagreement warning', !ev.findings.some(f => f.code === 'speed-hr-disagree'));
+  check('outdoor: no secondary', !ev.secondary);
+}
+
+// Disagreement fixture: Pa:HR ~-0.1% vs HR-only ~+4.6% -> warning + fallback.
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) {
+    const hr = 138 + 13 * t / 3600;
+    const speed = t < 1800 ? 3.0 : 3.14; // second half faster, masking HR drift
+    samples.push({ t, hr, speed });
+  }
+  const r = analyzeWindow(samples, 0, SET);
+  const ev = evaluate(samples, r, { speedTrusted: true });
+  check('disagree: warning emitted', ev.findings.some(f => f.code === 'speed-hr-disagree'));
+  check('disagree: hr-only primary', ev.primary.method === 'hr-only' &&
+    ev.primary.reason === 'disagreement', ev.primary.method + '/' + ev.primary.reason);
+  check('disagree: primary ~4.6%', ev.primary.value > 4 && ev.primary.value < 5.2,
+    ev.primary.value.toFixed(2));
+  check('disagree: Pa:HR near zero in secondary', ev.secondary &&
+    Math.abs(ev.secondary.value) < 1, ev.secondary && ev.secondary.value.toFixed(2));
+  check('disagree: band amber (from HR-only)', ev.band === 'amber', ev.band);
+  check('disagree: confidence low', ev.confidence === 'low');
+  check('disagree: finding mentions implied pace change',
+    ev.findings.find(f => f.code === 'speed-hr-disagree').text.includes('faster'));
+}
+
+// Parser flags on real fixtures (cross-checked against garmin-fit-sdk data).
+{
+  const outdoor = loadFit('garmin-fenix-5-bike.fit');
+  check('flags: outdoor ride hasGps', outdoor.hasGps === true);
+  const indoor = loadFit('sample-activity-indoor-trainer.fit');
+  check('flags: indoor trainer no GPS', indoor.hasGps === false);
+  check('flags: subSports exposed', Array.isArray(indoor.subSports));
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nall tests passed');

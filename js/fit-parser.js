@@ -48,6 +48,15 @@
     77: 'Wakesurfing'
   };
 
+  var SUB_SPORT_NAMES = {
+    0: 'Generic', 1: 'Treadmill', 2: 'Street', 3: 'Trail', 4: 'Track',
+    5: 'Spin', 6: 'Indoor cycling', 7: 'Road', 8: 'Mountain', 9: 'Downhill',
+    10: 'Recumbent', 11: 'Cyclocross', 12: 'Hand cycling', 13: 'Track cycling',
+    14: 'Indoor rowing', 15: 'Elliptical', 16: 'Stair climbing',
+    17: 'Lap swimming', 18: 'Open water', 19: 'Flexibility training',
+    20: 'Strength training', 58: 'Virtual activity'
+  };
+
   // Global message numbers we decode.
   var MESG_RECORD = 20;
   var MESG_SESSION = 18;
@@ -57,6 +66,8 @@
     var bytes = new Uint8Array(arrayBuffer);
     var records = [];
     var sports = [];
+    var subSports = [];
+    var flags = { hasGps: false };
     var offset = 0;
     var fileCount = 0;
 
@@ -74,7 +85,7 @@
         // Truncated file: parse what we can.
         dataEnd = dv.byteLength;
       }
-      parseSection(dv, dataStart, dataEnd, records, sports);
+      parseSection(dv, dataStart, dataEnd, records, sports, subSports, flags);
       fileCount++;
       offset = dataEnd + 2; // skip trailing CRC
     }
@@ -83,10 +94,10 @@
       throw new Error('Not a FIT file (missing ".FIT" header signature).');
     }
 
-    return { records: records, sports: sports };
+    return { records: records, sports: sports, subSports: subSports, hasGps: flags.hasGps };
   }
 
-  function parseSection(dv, start, end, records, sports) {
+  function parseSection(dv, start, end, records, sports, subSports, flags) {
     var offset = start;
     var definitions = {};  // local message type -> definition
     var lastTimestamp = null;
@@ -162,6 +173,8 @@
           fo += f.size;
         }
         if (def.globalNum === MESG_RECORD) {
+          // position_lat (0) / position_long (1): any valid fix means real GPS.
+          if (values[0] !== undefined || values[1] !== undefined) flags.hasGps = true;
           var ts = null;
           if (values[253] !== undefined) {
             ts = values[253];
@@ -185,6 +198,9 @@
           if (values[253] !== undefined) lastTimestamp = values[253];
           if (values[5] !== undefined) {
             sports.push(SPORT_NAMES[values[5]] || ('Sport #' + values[5]));
+          }
+          if (values[6] !== undefined) {
+            subSports.push(SUB_SPORT_NAMES[values[6]] || ('Sub-sport #' + values[6]));
           }
         }
       } else {
