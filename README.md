@@ -28,10 +28,17 @@ verdict plus supporting statistics and splits.
   (Shift = 5-minute steps).
 - **Color-coded heart rate** — blue below the threshold, red above it, gray
   outside the analysis window.
-- **Refinable baseline** — the baseline defaults to the heart rate at the
-  window start (auto), and a vertical slider beside the chart lets you refine
-  it to your designated AeT heart rate; the threshold, verdict, stats, and
-  splits all follow. Moving or resizing the window resets the baseline to auto.
+- **Automatic plateau detection** — the app finds the first "settled" heart-rate
+  plateau after your warm-up (robust slope + spread tests on a smoothed series),
+  uses it as the default baseline, and suggests the analysis-window start.
+  Detection degrades gracefully: interval workouts or unsettled runs fall back
+  to the window-start average, labeled accordingly — analysis is never blocked.
+- **Refinable baseline** — a vertical slider beside the chart refines the
+  baseline to your designated AeT heart rate; the threshold, verdict, stats,
+  and splits all follow. If your manual value strays more than 2 bpm from the
+  detected plateau, an inline note shows the counterfactual verdict at the
+  detected value. Moving or resizing the window resets the baseline to the
+  detected plateau ("Reset to auto" does the same).
 - **Verdict + stats** — end-of-window rise vs. start, average/min/max HR,
   percent of time over/under threshold, headroom below the threshold, and
   first-half vs. second-half HR drift.
@@ -57,11 +64,12 @@ page.
 ISO-8601 (`2026-07-19T06:00:00Z`), Unix epoch seconds/milliseconds, elapsed
 seconds, or `h:mm:ss`. A header row is optional.
 
-**Reading the result:** place the window over the steady, post-warm-up portion
-of your activity (drag it past the warm-up — starting the window during warm-up
-inflates the apparent drift). The verdict compares the average heart rate of
-the final 5 minutes of the window against the baseline (the first 30 seconds of
-the window, averaged to smooth sensor noise).
+**Reading the result:** the app places the window at the detected post-warm-up
+plateau and uses the plateau's median heart rate as the baseline; drag the
+window or the baseline slider to explore alternatives. The verdict compares the
+average heart rate of the final 5 minutes of the window against the baseline.
+When no plateau is found (e.g. an interval workout), the baseline falls back to
+the first 30 seconds of the window, averaged to smooth sensor noise.
 
 ## Hosting on GitHub Pages
 

@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { parseFit } = require('../js/fit-parser.js');
 const { parseCsv } = require('../js/csv-parser.js');
-const { analyzeWindow, rangeStats } = require('../js/analysis.js');
+const { analyzeWindow, rangeStats, detectBaseline } = require('../js/analysis.js');
 
 let failures = 0;
 function check(name, cond, detail) {
@@ -163,6 +163,104 @@ const SET = { windowLen: 3600, thresholdPct: 5, splitLen: 600, smoothSec: 30, en
   const r = rangeStats(samples, 0, 10);
   check('rangeStats: half-open', close(r.avg, 100), `got ${r.avg}`);
 }
+
+// ---- detectBaseline -------------------------------------------------------
+console.log('detectBaseline');
+
+// Deterministic pseudo-noise so tests are reproducible.
+function noise(t, amp) { return amp * Math.sin(t * 7.13) * Math.cos(t * 1.91); }
+
+// Clean steady run: 10-min ramp 105→140, then flat 140 → high confidence,
+// plateau found soon after the ramp ends.
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) {
+    const base = t < 600 ? 105 + 35 * t / 600 : 140;
+    samples.push({ t, hr: Math.round(base + noise(t, 1)) });
+  }
+  const d = detectBaseline(samples);
+  check('steady: confidence high', d.confidence === 'high', d.confidence);
+  check('steady: baseline ≈ 140', Math.abs(d.baseline - 140) <= 1.5, `got ${d.baseline}`);
+  // Earliest qualifying window may absorb a bit of ramp tail (median-robust);
+  // what matters is it skips the bulk of the ramp and doesn't dawdle.
+  check('steady: plateau starts after ramp, promptly',
+    d.windowStart >= 450 && d.windowStart <= 900, `got ${d.windowStart}`);
+}
+
+// Interval run: 3-min surges/floats — no 5-min window is settled → none.
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) {
+    const base = t < 300 ? 100 + 50 * t / 300 : (Math.floor((t - 300) / 180) % 2 ? 120 : 165);
+    samples.push({ t, hr: Math.round(base + noise(t, 1)) });
+  }
+  const d = detectBaseline(samples);
+  check('intervals: confidence none', d.confidence === 'none', d.confidence);
+}
+
+// Plateau then step up (treadmill speed change): must catch the FIRST plateau.
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) {
+    let base;
+    if (t < 300) base = 100 + 40 * t / 300;
+    else if (t < 1200) base = 140;
+    else base = 155;
+    samples.push({ t, hr: Math.round(base + noise(t, 1)) });
+  }
+  const d = detectBaseline(samples);
+  check('step-up: found a plateau', d.confidence !== 'none', d.confidence);
+  check('step-up: FIRST plateau (≈140, not 155)', Math.abs(d.baseline - 140) <= 1.5, `got ${d.baseline}`);
+  check('step-up: window inside first plateau', d.windowEnd <= 1200, `got ${d.windowEnd}`);
+}
+
+// HR dropout gap inside the plateau: tolerated (interpolated), no crash.
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) {
+    if (t > 700 && t < 760) continue; // 60 s dropout
+    const base = t < 300 ? 110 + 35 * t / 300 : 145;
+    samples.push({ t, hr: Math.round(base + noise(t, 1)) });
+  }
+  const d = detectBaseline(samples);
+  check('dropout: still detects', d.confidence !== 'none', d.confidence);
+  check('dropout: baseline ≈ 145', Math.abs(d.baseline - 145) <= 1.5, `got ${d.baseline}`);
+}
+
+// Runs shorter than the scannable minimum → none, never throws.
+{
+  const samples = [];
+  for (let t = 0; t <= 480; t++) samples.push({ t, hr: 150 });
+  check('8-min run: none', detectBaseline(samples).confidence === 'none');
+}
+// …but a 15-minute run with a real plateau still works.
+{
+  const samples = [];
+  for (let t = 0; t <= 900; t++) {
+    const base = t < 240 ? 110 + 38 * t / 240 : 148;
+    samples.push({ t, hr: Math.round(base + noise(t, 1)) });
+  }
+  const d = detectBaseline(samples);
+  check('15-min run: detects', d.confidence !== 'none', d.confidence);
+  check('15-min run: baseline ≈ 148', Math.abs(d.baseline - 148) <= 1.5, `got ${d.baseline}`);
+}
+
+// Sparse recording (4 s sample interval, "smart recording") → resampled, works.
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t += 4) {
+    const base = t < 600 ? 105 + 35 * t / 600 : 142;
+    samples.push({ t, hr: Math.round(base + noise(t, 1)) });
+  }
+  const d = detectBaseline(samples);
+  check('4s-interval: detects', d.confidence !== 'none', d.confidence);
+  check('4s-interval: baseline ≈ 142', Math.abs(d.baseline - 142) <= 1.5, `got ${d.baseline}`);
+}
+
+// Degenerate inputs never throw.
+check('empty input: none', detectBaseline([]).confidence === 'none');
+check('single sample: none', detectBaseline([{ t: 0, hr: 140 }]).confidence === 'none');
+check('null input: none', detectBaseline(null).confidence === 'none');
 
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nall tests passed');
 process.exit(failures ? 1 : 0);

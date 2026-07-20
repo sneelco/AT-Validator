@@ -20,7 +20,8 @@
     absoluteT0: null,      // unix s of first sample when known
     meta: null,            // { name, sports, distance }
     windowStart: 0,        // elapsed s
-    baselineOverride: null, // manual baseline (bpm), null = auto from window start
+    baselineOverride: null, // manual baseline (bpm), null = auto
+    detected: null,        // detectBaseline() result for the loaded activity
     hrRange: null,         // [min, max] bpm of loaded activity
     settings: Object.assign({}, DEFAULTS)
   };
@@ -30,7 +31,7 @@
    'stats', 'splits-body', 'splits-table', 'verdict', 'activity-meta', 'settings-form',
    'set-window', 'set-threshold', 'set-split', 'set-smooth', 'reset-settings',
    'analysis-section', 'load-error', 'slider-row',
-   'baseline-slider', 'baseline-readout', 'baseline-reset'
+   'baseline-slider', 'baseline-readout', 'baseline-reset', 'baseline-warning'
   ].forEach(function (id) { els[id] = document.getElementById(id); });
 
   var chart = new window.ATV.chart.ATChart(els.chart, {
@@ -113,6 +114,10 @@
     };
     state.windowStart = 0;
     state.baselineOverride = null;
+    state.detected = analysis.detectBaseline(state.samples);
+    if (state.detected.confidence !== 'none') {
+      state.windowStart = state.detected.windowStart; // suggested start
+    }
     var hrLo = Infinity, hrHi = -Infinity;
     state.samples.forEach(function (r) {
       if (r.hr < hrLo) hrLo = r.hr;
@@ -135,6 +140,14 @@
     return Math.max(Math.min(state.settings.windowMin * 60, total), 60);
   }
 
+  // The baseline used when no manual override is active: the detected
+  // plateau when we have one, else null (analyzeWindow falls back to the
+  // window-start average).
+  function detectedBaseline() {
+    return state.detected && state.detected.confidence !== 'none'
+      ? state.detected.baseline : null;
+  }
+
   function fitWindowToActivity() {
     var s = state.samples;
     if (!s.length) return;
@@ -155,7 +168,8 @@
       splitLen: set.splitMin * 60,
       smoothSec: set.smoothSec,
       endSec: Math.min(set.endSec, winLen / 4),
-      baselineOverride: state.baselineOverride
+      baselineOverride: state.baselineOverride !== null
+        ? state.baselineOverride : detectedBaseline()
     });
     if (!result) return;
 
@@ -188,6 +202,16 @@
       'Window: ' + fmtElapsed(state.windowStart) + ' – ' + fmtElapsed(state.windowStart + winLen);
   }
 
+  function baselineSourceLabel() {
+    if (state.baselineOverride !== null) return 'manual (slider)';
+    var d = state.detected;
+    if (d && d.confidence !== 'none') {
+      return 'detected plateau (' + fmtElapsed(d.windowStart) + '\u2013' + fmtElapsed(d.windowEnd) + ')' +
+        (d.confidence === 'low' ? ' \u00b7 low confidence' : '');
+    }
+    return 'auto (unsettled \u2014 no clear plateau found)';
+  }
+
   function renderBaseline(r) {
     var manual = state.baselineOverride !== null;
     var slider = els['baseline-slider'];
@@ -195,8 +219,46 @@
     slider.max = Math.ceil(state.hrRange[1]) + 5;
     slider.value = Math.round(r.baseline);
     els['baseline-readout'].textContent =
-      'Baseline ' + Math.round(r.baseline) + ' bpm — ' + (manual ? 'manual' : 'auto (window start)');
+      'Baseline ' + Math.round(r.baseline) + ' bpm \u2014 ' + baselineSourceLabel();
     els['baseline-reset'].hidden = !manual;
+    renderBaselineWarning(r);
+  }
+
+  // Non-blocking heads-up when the manual baseline strays from the detected
+  // plateau: show the counterfactual verdict at the detected value.
+  function renderBaselineWarning(r) {
+    var warn = els['baseline-warning'];
+    var det = detectedBaseline();
+    if (state.baselineOverride === null || det === null ||
+        Math.abs(state.baselineOverride - det) <= 2) {
+      warn.hidden = true;
+      return;
+    }
+    var set = state.settings;
+    var winLen = effectiveWindowLen();
+    var cf = analysis.analyzeWindow(state.samples, state.windowStart, {
+      windowLen: winLen,
+      thresholdPct: set.thresholdPct,
+      splitLen: set.splitMin * 60,
+      smoothSec: set.smoothSec,
+      endSec: Math.min(set.endSec, winLen / 4),
+      baselineOverride: det
+    });
+    warn.textContent = '';
+    if (!cf) { warn.hidden = true; return; }
+    if (winLen < set.windowMin * 60 - 1) cf.verdict = 'insufficient';
+    var names = { pass: 'PASS', fail: 'FAIL', insufficient: 'INSUFFICIENT' };
+    var rise = cf.endRisePct !== null ? ' (' + fmtSigned(cf.endRisePct, 1) + '%)' : '';
+    warn.appendChild(document.createTextNode(
+      '\u26a0 Manual baseline ' + Math.round(state.baselineOverride) +
+      ' vs detected plateau ' + Math.round(det) + ' \u2014 verdict ' +
+      (cf.verdict === r.verdict ? 'stays ' : 'changes to ')));
+    var strong = document.createElement('strong');
+    strong.className = cf.verdict;
+    strong.textContent = names[cf.verdict];
+    warn.appendChild(strong);
+    warn.appendChild(document.createTextNode(rise + ' at detected value.'));
+    warn.hidden = false;
   }
 
   function renderMeta() {
@@ -253,9 +315,7 @@
   function renderStats(r) {
     var tiles = [
       { label: 'Baseline HR', value: Math.round(r.baseline), unit: 'bpm',
-        sub: state.baselineOverride !== null
-          ? 'manual (slider)'
-          : 'auto: first ' + state.settings.smoothSec + ' s of window' },
+        sub: baselineSourceLabel() },
       { label: 'Threshold (+' + state.settings.thresholdPct + '%)', value: Math.round(r.threshold),
         unit: 'bpm', sub: 'limit for the window' },
       { label: 'End-of-window rise', value: r.endRisePct !== null ? fmtSigned(r.endRisePct, 1) : '—',
