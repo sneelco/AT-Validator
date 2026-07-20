@@ -29,7 +29,8 @@
     this.drag = null;
     this.absoluteT0 = null; // unix seconds of first sample, when known
     this.hasSpeed = false;
-    this.speedMode = 'pace'; // 'pace' (min/km, up = faster) | 'speed' (km/h)
+    this.speedMode = 'pace'; // 'pace' (up = faster) | 'speed'
+    this.units = 'metric';   // 'metric' (km) | 'imperial' (mi)
 
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'atv-chart-canvas';
@@ -105,9 +106,22 @@
     this.render();
   };
 
-  // Displayed value for the strip: km/h, or s/km for pace.
+  ATChart.prototype.setUnits = function (units) {
+    this.units = units === 'imperial' ? 'imperial' : 'metric';
+    this.render();
+  };
+
+  // Displayed value for the strip: km/h / mph, or s-per-km / s-per-mi for pace.
   ATChart.prototype.speedValue = function (v) {
-    return this.speedMode === 'speed' ? v * 3.6 : 1000 / v;
+    if (this.speedMode === 'speed') {
+      return this.units === 'imperial' ? v * 2.236936 : v * 3.6;
+    }
+    return (this.units === 'imperial' ? 1609.344 : 1000) / v;
+  };
+
+  ATChart.prototype.unitLabel = function () {
+    if (this.speedMode === 'speed') return this.units === 'imperial' ? 'mph' : 'km/h';
+    return this.units === 'imperial' ? 'min/mi' : 'min/km';
   };
 
   ATChart.prototype.setState = function (state) {
@@ -492,7 +506,7 @@
     ctx.fillStyle = P.muted;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'bottom';
-    ctx.fillText(this.speedMode === 'pace' ? 'pace (min/km)' : 'speed (km/h)',
+    ctx.fillText((this.speedMode === 'pace' ? 'pace (' : 'speed (') + this.unitLabel() + ')',
       L.plotX + 2, L.speedY - 2);
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
@@ -720,8 +734,8 @@
       spRow.appendChild(spKey);
       var spStrong = document.createElement('strong');
       spStrong.textContent = this.speedMode === 'speed'
-        ? (hs.speed * 3.6).toFixed(1) + ' km/h'
-        : this.fmtSpeedVal(1000 / hs.speed) + ' /km';
+        ? this.speedValue(hs.speed).toFixed(1) + ' ' + this.unitLabel()
+        : this.fmtSpeedVal(this.speedValue(hs.speed)) + ' /' + (this.units === 'imperial' ? 'mi' : 'km');
       spRow.appendChild(spStrong);
       tt.appendChild(spRow);
     }

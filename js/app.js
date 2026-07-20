@@ -20,6 +20,7 @@
     absoluteT0: null,      // unix s of first sample when known
     meta: null,            // { name, sports, distance }
     windowStart: 0,        // elapsed s
+    units: 'metric',       // 'metric' | 'imperial' (persisted)
     baselineOverride: null, // manual baseline (bpm), null = auto
     detected: null,        // detectBaseline() result for the loaded activity
     hrRange: null,         // [min, max] bpm of loaded activity
@@ -33,7 +34,8 @@
    'analysis-section', 'load-error', 'slider-row',
    'baseline-slider', 'baseline-readout', 'baseline-reset', 'baseline-warning',
    'apply-detected', 'file-details', 'file-details-pre',
-   'speed-toggle', 'mode-pace', 'mode-speed'
+   'speed-toggle', 'mode-pace', 'mode-speed',
+   'units-toggle', 'unit-km', 'unit-mi'
   ].forEach(function (id) { els[id] = document.getElementById(id); });
 
   var chart = new window.ATV.chart.ATChart(els.chart, {
@@ -142,6 +144,7 @@
     chart.setData(state.samples, state.absoluteT0);
     els['chart'].parentElement.classList.toggle('with-speed', chart.hasSpeed);
     els['speed-toggle'].hidden = !chart.hasSpeed;
+    els['units-toggle'].hidden = !chart.hasSpeed && !state.meta.distance;
     els['analysis-section'].hidden = false;
     refresh();
     els['analysis-section'].scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -322,7 +325,11 @@
     }
     var total = state.samples[state.samples.length - 1].t;
     parts.push('Duration ' + fmtElapsed(total));
-    if (m.distance) parts.push((m.distance / 1000).toFixed(2) + ' km');
+    if (m.distance) {
+      parts.push(state.units === 'imperial'
+        ? (m.distance / 1609.344).toFixed(2) + ' mi'
+        : (m.distance / 1000).toFixed(2) + ' km');
+    }
     if (state.absoluteT0 !== null) {
       parts.push(new Date(state.absoluteT0 * 1000).toLocaleString([], {
         dateStyle: 'medium', timeStyle: 'short'
@@ -586,6 +593,20 @@
   }
   els['mode-pace'].addEventListener('click', function () { setSpeedMode('pace'); });
   els['mode-speed'].addEventListener('click', function () { setSpeedMode('speed'); });
+
+  function setUnits(units) {
+    state.units = units === 'imperial' ? 'imperial' : 'metric';
+    chart.setUnits(state.units);
+    els['unit-km'].classList.toggle('active', state.units === 'metric');
+    els['unit-km'].setAttribute('aria-pressed', String(state.units === 'metric'));
+    els['unit-mi'].classList.toggle('active', state.units === 'imperial');
+    els['unit-mi'].setAttribute('aria-pressed', String(state.units === 'imperial'));
+    try { localStorage.setItem('atv-units', state.units); } catch (e) { /* private mode */ }
+    if (state.samples.length) refresh();
+  }
+  els['unit-km'].addEventListener('click', function () { setUnits('metric'); });
+  els['unit-mi'].addEventListener('click', function () { setUnits('imperial'); });
+  try { setUnits(localStorage.getItem('atv-units') || 'metric'); } catch (e) { setUnits('metric'); }
 
   els['apply-detected'].addEventListener('click', function () {
     if (!state.detected || state.detected.confidence === 'none') return;

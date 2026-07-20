@@ -71,8 +71,8 @@ mismatches. Warnings cap the reported confidence.
 - **Color-coded heart rate** — blue below the threshold, red above it, gray
   outside the analysis window.
 - **Slim pace/speed strip** — a compact panel under the HR chart (only when the
-  file has a speed channel) with a pace ↔ speed toggle, up = faster in both
-  modes. Segments deviating more than ±5% from the window's median pace are
+  file has a speed channel) with pace ↔ speed and km ↔ mi
+  toggles (the units choice is remembered), up = faster in both modes. Segments deviating more than ±5% from the window's median pace are
   highlighted in amber, with a dotted median guide — so a mid-test pace change
   is visible at a glance without stealing attention from the HR trace.
 - **Automatic plateau detection** — the app finds the first "settled" heart-rate
