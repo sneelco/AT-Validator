@@ -9,13 +9,37 @@ your browser. No backend, no build step, no data ever leaves your machine.
 
 Based on the heart-rate drift field test popularized by coach Scott Johnston
 (Uphill Athlete): hold a steady effort at your *suspected* aerobic-threshold
-heart rate for **60 minutes**. If heart rate rises **more than 5%** from where
-it started, the effort was above your aerobic threshold; if it stays within 5%,
-you were at or below it.
+heart rate for **60 minutes** and see whether heart rate stays coupled to the
+work, or drifts away from it.
 
-This tool graphs your heart rate, overlays the +5% threshold line computed from
-the heart rate at the start of an adjustable 60-minute window, and gives you a
-verdict plus supporting statistics and splits.
+**Primary metric — Pa:HR decoupling.** When the file carries speed data, the
+verdict is driven by aerobic decoupling: speed per heartbeat in the first half
+of the window vs the second half, as a percent decline. This is the standard
+decoupling formulation, and it self-corrects for small pace changes — slowing
+down to hold heart rate flat no longer flatters the result. Without speed data
+(e.g. a bare CSV), the tool falls back to HR-only drift (second-half average vs
+first-half average) and says so.
+
+**Bands.** The decoupling percentage maps to a three-band verdict:
+
+| Decoupling | Verdict |
+|---|---|
+| < 3.5% | **Aerobic** (green) — at or below AeT |
+| 3.5–6% | **Borderline** (amber) — at the edge; retest slightly slower |
+| > 6% | **Above threshold** (red) — started above AeT |
+
+A result within 0.5% of a band edge is flagged so it isn't over-read. The
+classic presentation — end-of-window heart-rate rise vs the +5% threshold
+line — is still computed and shown, and the chart still draws the threshold
+overlay.
+
+**Findings.** Alongside the band, the verdict lists computed findings that
+qualify it: second-half slowdown (corrupts the test in the flattering
+direction), heart rate still climbing at the window end (a longer window would
+read worse), drift concentrated in the final minutes (late-run breakdown), a
+plateau-then-break time ("held ~135 until ~50:00" — the durability limit),
+short windows, recording-gap coverage, and manual-vs-detected baseline
+mismatches. Warnings cap the reported confidence.
 
 ## Features
 
@@ -38,10 +62,13 @@ verdict plus supporting statistics and splits.
   and splits all follow. If your manual value strays more than 2 bpm from the
   detected plateau, an inline note shows the counterfactual verdict at the
   detected value. Moving or resizing the window resets the baseline to the
-  detected plateau ("Reset to auto" does the same).
-- **Verdict + stats** — end-of-window rise vs. start, average/min/max HR,
-  percent of time over/under threshold, headroom below the threshold, and
-  first-half vs. second-half HR drift.
+  detected plateau ("Reset to auto" does the same), and a **Re-apply detected**
+  button in the settings bar restores both the detected window placement and
+  baseline after any manual exploring.
+- **Layered verdict + stats** — banded verdict (aerobic / borderline / above
+  threshold) driven by Pa:HR decoupling with computed findings and a
+  next-step suggestion, plus end-of-window rise, average/min/max HR, percent
+  of time over/under threshold, and headroom below the threshold.
 - **Splits** — 10-minute splits by default, each with average HR, range, rise
   vs. start, time over threshold, and headroom, plus an overall row.
 - **Adjustable settings** — window length (60 min), allowed rise (5%), split

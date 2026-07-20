@@ -15,9 +15,11 @@
 
   var MAX_GAP = 30; // seconds — cap per-sample weight across recording gaps
 
-  // Time-weighted stats for samples within [startT, endT).
+  // Time-weighted stats for samples within [startT, endT). Speed-aware: when
+  // samples carry a speed (m/s), the same dt weighting accumulates it too.
   function rangeStats(samples, startT, endT, threshold) {
     var sumHrDt = 0, sumDt = 0, timeOver = 0;
+    var sumSpeedDt = 0, speedDt = 0;
     var min = Infinity, max = -Infinity;
     var i = lowerBound(samples, startT);
     for (; i < samples.length && samples[i].t < endT; i++) {
@@ -28,6 +30,10 @@
       sumHrDt += s.hr * dt;
       sumDt += dt;
       if (threshold !== undefined && s.hr > threshold) timeOver += dt;
+      if (s.speed !== undefined && s.speed !== null) {
+        sumSpeedDt += s.speed * dt;
+        speedDt += dt;
+      }
       if (s.hr < min) min = s.hr;
       if (s.hr > max) max = s.hr;
     }
@@ -40,7 +46,9 @@
       timeOver: timeOver,
       timeUnder: sumDt - timeOver,
       pctOver: 100 * timeOver / sumDt,
-      pctUnder: 100 * (sumDt - timeOver) / sumDt
+      pctUnder: 100 * (sumDt - timeOver) / sumDt,
+      avgSpeed: speedDt > 0 ? sumSpeedDt / speedDt : null,
+      speedCoverage: speedDt / sumDt
     };
   }
 
@@ -197,16 +205,16 @@
     }
   }
 
-  function detectBaselineInner(samples) {
+  // Resample HR to 1 Hz (tracking gap-interpolated points) and smooth with a
+  // rolling median. Shared by plateau detection and the evaluation layer.
+  function prepareSeries(samples) {
     var P = PLATEAU;
-    if (!samples || samples.length < 2) return { confidence: 'none' };
+    if (!samples || samples.length < 2) return null;
     var t0 = samples[0].t;
     var total = samples[samples.length - 1].t - t0;
     var n = Math.floor(total) + 1;
-    if (n < P.WARMUP_MIN_SEC + P.WIN_SEC) return { confidence: 'none' };
+    if (n < 2) return null;
 
-    // 1a. Resample to 1 Hz (linear interpolation), tracking which points are
-    // synthetic (inside a recording gap) so a gap can't fake a plateau.
     var hr = new Float64Array(n);
     var synth = new Uint8Array(n);
     var idx = 0;
@@ -221,13 +229,21 @@
       synth[s] = Math.min(Math.abs(s - ta), Math.abs(tb - s)) > P.SYNTH_DIST_SEC ? 1 : 0;
     }
 
-    // 1b. Rolling median — robust to HR-monitor dropout spikes.
     var sm = new Float64Array(n);
     for (var i = 0; i < n; i++) {
       var lo = Math.max(0, i - P.SMOOTH_HALF_SEC);
       var hi = Math.min(n, i + P.SMOOTH_HALF_SEC + 1);
       sm[i] = median(hr.subarray(lo, hi));
     }
+    return { hr: hr, sm: sm, synth: synth, n: n, t0: t0 };
+  }
+
+  function detectBaselineInner(samples) {
+    var P = PLATEAU;
+    var series = prepareSeries(samples);
+    if (!series) return { confidence: 'none' };
+    var n = series.n, sm = series.sm, synth = series.synth;
+    if (n < P.WARMUP_MIN_SEC + P.WIN_SEC) return { confidence: 'none' };
 
     // 2. Skip the warm-up ramp: first point within FLAT_TOL of the level it
     // holds for the next two minutes, but never before minute 5.
@@ -277,8 +293,238 @@
     return { confidence: 'none' };
   }
 
+  /*
+   * Evaluation layer: turn analyzeWindow's numbers into a layered,
+   * findings-based verdict. Primary metric is Pa:HR decoupling (speed per
+   * heartbeat, first half vs second half) when speed covers enough of the
+   * window; otherwise HR-only drift. Pure function; never throws.
+   */
+  var EVAL = {
+    AEROBIC_MAX_PCT: 3.5,      // decoupling below this → aerobic (green)
+    BORDERLINE_MAX_PCT: 6,     // …up to this → borderline (amber); above → red
+    EDGE_TOL_PCT: 0.5,         // within this of a band edge → boundary finding
+    SPEED_COVERAGE_MIN: 0.8,   // speed must cover this fraction for Pa:HR
+    PACE_SLOW_WARN_PCT: 2,     // 2nd half this much slower → warning
+    PACE_CV_CAVEAT: 0.12,      // smoothed-pace CV above this → erratic-pace caveat
+    SHORT_WINDOW_SEC: 45 * 60, // analyzed window below this → caveat
+    COVERAGE_CAVEAT: 0.95,     // HR coverage in (0.90, 0.95) → caveat
+    FINAL_SLOPE_MAX: 0.3,      // bpm/min over final third → not-plateaued finding
+    LATE_FRAC: 0.2,            // "final 20% of the window"
+    LATE_CONC_MIN: 0.5,        // >50% of over-threshold time in that slice
+    LATE_MIN_OVER_SEC: 120,    // ignore late-concentration below this much total
+    BREAK_RISE_BPM: 3,         // sustained rise above plateau that counts as a break
+    BREAK_SUSTAIN_SEC: 120,
+    BREAK_ONSET_BPM: 0.5,      // backtrack from the crossing to where the rise began
+    BASELINE_MISMATCH_BPM: 2
+  };
+
+  var SEVERITY_RANK = { warning: 0, caveat: 1, info: 2 };
+
+  function evaluate(samples, result, settings) {
+    try {
+      return evaluateInner(samples, result, settings || {});
+    } catch (e) {
+      var v = result && result.driftPct !== null && result.driftPct !== undefined ? result.driftPct : 0;
+      return { verdict: 'insufficient', band: null, confidence: 'low', findings: [],
+        primary: { value: v, method: 'hr-only' } };
+    }
+  }
+
+  function evaluateInner(samples, result, settings) {
+    var E = EVAL;
+    var ws = result.windowStart, we = result.windowEnd;
+    var len = we - ws;
+    var mid = ws + len / 2;
+    var h1 = rangeStats(samples, ws, mid, result.threshold);
+    var h2 = rangeStats(samples, mid, we, result.threshold);
+    var findings = [];
+
+    // ---- primary metric ---------------------------------------------------
+    var primary;
+    var speedOk = result.window.speedCoverage > E.SPEED_COVERAGE_MIN &&
+      h1 && h2 && h1.avgSpeed !== null && h2.avgSpeed !== null &&
+      h1.avgSpeed > 0.1 && h1.avg > 0;
+    if (speedOk) {
+      var eff1 = h1.avgSpeed / h1.avg;
+      var eff2 = h2.avgSpeed / h2.avg;
+      primary = { value: 100 * (eff1 - eff2) / eff1, method: 'pa:hr' };
+    } else {
+      primary = { value: result.driftPct !== null ? result.driftPct : 0, method: 'hr-only' };
+    }
+
+    if (result.verdict === 'insufficient') {
+      return { verdict: 'insufficient', band: null, confidence: 'low', findings: [], primary: primary };
+    }
+
+    var band = primary.value < E.AEROBIC_MAX_PCT ? 'green'
+      : primary.value <= E.BORDERLINE_MAX_PCT ? 'amber' : 'red';
+    var verdict = band === 'green' ? 'aerobic' : band === 'amber' ? 'borderline' : 'above-threshold';
+
+    // Band edge: don't over-read a value sitting on a boundary.
+    [E.AEROBIC_MAX_PCT, E.BORDERLINE_MAX_PCT].forEach(function (edge) {
+      if (Math.abs(primary.value - edge) <= E.EDGE_TOL_PCT) {
+        findings.push({ severity: 'caveat', code: 'band-edge',
+          text: 'Decoupling ' + primary.value.toFixed(1) + '% sits within ' + E.EDGE_TOL_PCT +
+            '% of the ' + edge + '% band edge — treat the band as approximate, not a hard call.' });
+      }
+    });
+
+    // ---- precondition findings -------------------------------------------
+    if (speedOk) {
+      // Second-half slowdown flatters HR drift (partly self-corrected by Pa:HR).
+      var slowPct = 100 * (h1.avgSpeed / h2.avgSpeed - 1);
+      if (slowPct > E.PACE_SLOW_WARN_PCT) {
+        findings.push({ severity: 'warning', code: 'pace-slowed',
+          text: 'Second-half pace was ' + slowPct.toFixed(1) + '% slower than the first half — ' +
+            'slowing to hold heart rate down understates HR drift. Pa:HR partly corrects for this, ' +
+            'but a steady-pace retest is more trustworthy.' });
+      }
+      // Erratic pacing (terrain, stops) makes the ratio noisy.
+      var cv = paceCv(samples, ws, we);
+      if (cv !== null && cv > E.PACE_CV_CAVEAT) {
+        findings.push({ severity: 'caveat', code: 'pace-erratic',
+          text: 'Pace varied widely across the window (CV ' + Math.round(cv * 100) +
+            '%) — decoupling is noisier on uneven terrain or with stops.' });
+      }
+    }
+
+    if (len < E.SHORT_WINDOW_SEC) {
+      findings.push({ severity: 'caveat', code: 'short-window',
+        text: 'Analyzed window is ' + Math.round(len / 60) + ' minutes — drift is understated vs ' +
+          'the 60-minute protocol; treat a green result gently.' });
+    }
+
+    if (result.coverage > 0.90 && result.coverage < E.COVERAGE_CAVEAT) {
+      findings.push({ severity: 'caveat', code: 'coverage',
+        text: 'Heart-rate data covers only ' + Math.round(result.coverage * 100) +
+          '% of the window (recording gaps).' });
+    }
+
+    if (settings.baselineOverride != null && settings.detectedBaseline != null &&
+        Math.abs(settings.baselineOverride - settings.detectedBaseline) > E.BASELINE_MISMATCH_BPM) {
+      findings.push({ severity: 'warning', code: 'baseline-mismatch',
+        text: 'Manual baseline ' + Math.round(settings.baselineOverride) + ' bpm differs from the ' +
+          'detected plateau ' + Math.round(settings.detectedBaseline) +
+          ' bpm — threshold-relative stats follow the manual value.' });
+    }
+
+    // ---- trend-shape findings --------------------------------------------
+    var series = prepareSeries(samples);
+    if (series) {
+      // Series indices are seconds since the first sample.
+      var iws = Math.max(Math.round(ws - series.t0), 0);
+      var iwe = Math.min(Math.round(we - series.t0), series.n);
+
+      // Final-third slope: still climbing at the end?
+      var thirdStart = Math.round(iws + (iwe - iws) * 2 / 3);
+      if (iwe - thirdStart > 60) {
+        var slope = theilSen(series.sm, thirdStart, iwe, 5) * 60;
+        if (slope > E.FINAL_SLOPE_MAX) {
+          findings.push({ severity: 'warning', code: 'not-plateaued',
+            text: 'Heart rate was still rising ~' + slope.toFixed(1) + ' bpm/min over the final ' +
+              'third of the window — it had not plateaued, and a longer window would likely read worse.' });
+        }
+      }
+
+      // Plateau-then-break: the durability signal.
+      var brk = findBreakpoint(series, iws, iwe);
+      if (brk) {
+        findings.push({ severity: 'info', code: 'break-point', breakSec: brk.breakSec,
+          plateauHr: brk.plateauHr,
+          text: 'Held ~' + Math.round(brk.plateauHr) + ' bpm until ~' + fmtMinSec(brk.breakSec) +
+            ', then rose ' + (brk.riseBpm >= 0 ? '+' : '') + Math.round(brk.riseBpm) +
+            ' bpm by the window end — that breakpoint is the durability limit at this effort.' });
+      }
+    }
+
+    // Late concentration of over-threshold time.
+    var lateStart = we - len * E.LATE_FRAC;
+    var late = rangeStats(samples, lateStart, we, result.threshold);
+    if (late && result.window.timeOver >= E.LATE_MIN_OVER_SEC &&
+        late.timeOver / result.window.timeOver > E.LATE_CONC_MIN) {
+      findings.push({ severity: 'info', code: 'late-breakdown',
+        text: Math.round(100 * late.timeOver / result.window.timeOver) +
+          '% of time over threshold falls in the final ' + Math.round(len * E.LATE_FRAC / 60) +
+          ' minutes — a late-run breakdown rather than drift spread across the hour.' });
+    }
+
+    findings.sort(function (a, b) { return SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]; });
+
+    var confidence = 'high';
+    if (findings.some(function (f) { return f.severity === 'caveat'; })) confidence = 'medium';
+    if (findings.some(function (f) { return f.severity === 'warning'; })) confidence = 'low';
+
+    return { verdict: verdict, band: band, confidence: confidence, findings: findings, primary: primary };
+  }
+
+  // Coefficient of variation of smoothed pace (s per meter) over the window.
+  function paceCv(samples, ws, we) {
+    var speeds = [];
+    for (var i = lowerBound(samples, ws); i < samples.length && samples[i].t < we; i++) {
+      var v = samples[i].speed;
+      if (v !== undefined && v !== null && v > 0.3) speeds.push(v);
+    }
+    if (speeds.length < 30) return null;
+    var paces = [];
+    for (var j = 0; j < speeds.length; j++) {
+      var lo = Math.max(0, j - 7), hi = Math.min(speeds.length, j + 8);
+      paces.push(1 / median(speeds.slice(lo, hi)));
+    }
+    var mean = paces.reduce(function (a, b) { return a + b; }, 0) / paces.length;
+    var varsum = paces.reduce(function (a, b) { return a + (b - mean) * (b - mean); }, 0) / paces.length;
+    return Math.sqrt(varsum) / mean;
+  }
+
+  // Find a settled plateau inside [iws, iwe) and the point where HR breaks
+  // sustainably above it. Reuses the plateau qualifying machinery.
+  function findBreakpoint(series, iws, iwe) {
+    var P = PLATEAU, E = EVAL;
+    var sm = series.sm, synth = series.synth;
+    var plateauHr = null, plateauEnd = null;
+    for (var start = iws; start + P.WIN_SEC <= iwe; start += P.STEP_SEC) {
+      var end = start + P.WIN_SEC;
+      var synthCount = 0;
+      for (var g = start; g < end; g++) synthCount += synth[g];
+      if (synthCount / P.WIN_SEC > P.MAX_SYNTH_FRAC) continue;
+      var slope = theilSen(sm, start, end, 5) * 60;
+      if (Math.abs(slope) >= P.SLOPE_MAX || iqrOf(sm, start, end) >= P.IQR_MAX) continue;
+      plateauHr = median(sm.subarray(start, end));
+      plateauEnd = end;
+      break;
+    }
+    if (plateauHr === null) return null;
+
+    // First index after the plateau where HR stays above plateau + BREAK_RISE
+    // for BREAK_SUSTAIN seconds.
+    for (var i = plateauEnd; i < iwe; i++) {
+      if (sm[i] > plateauHr + E.BREAK_RISE_BPM) {
+        var sustained = true;
+        var stop = Math.min(i + E.BREAK_SUSTAIN_SEC, iwe);
+        if (stop - i < E.BREAK_SUSTAIN_SEC) { sustained = false; }
+        for (var k = i; sustained && k < stop; k++) {
+          if (sm[k] <= plateauHr + E.BREAK_RISE_BPM) sustained = false;
+        }
+        if (sustained) {
+          // The crossing of plateau+3 lags the actual inflection; report the
+          // onset — the last moment HR was still at the plateau level.
+          var onset = i;
+          while (onset > plateauEnd && sm[onset - 1] > plateauHr + E.BREAK_ONSET_BPM) onset--;
+          return { plateauHr: plateauHr, breakSec: onset, riseBpm: sm[iwe - 1] - plateauHr };
+        }
+      }
+    }
+    return null;
+  }
+
+  function fmtMinSec(sec) {
+    sec = Math.round(sec);
+    var m = Math.floor(sec / 60), s = sec % 60;
+    return m + ':' + String(s).padStart(2, '0');
+  }
+
   var api = { rangeStats: rangeStats, analyzeWindow: analyzeWindow, lowerBound: lowerBound,
-    detectBaseline: detectBaseline, PLATEAU: PLATEAU, MAX_GAP: MAX_GAP };
+    detectBaseline: detectBaseline, evaluate: evaluate,
+    PLATEAU: PLATEAU, EVAL: EVAL, MAX_GAP: MAX_GAP };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   global.ATV = global.ATV || {};
   global.ATV.analysis = api;

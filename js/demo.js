@@ -31,7 +31,9 @@
         base = 148 - (t - 5100) / 300 * 30;                        // cool-down
       }
       hrNoise = hrNoise * 0.92 + (rnd() - 0.5) * 2.4;
-      records.push({ t: t0 + t, hr: Math.round(base + hrNoise) });
+      var speed = 3.2 + 0.15 * Math.sin(t / 300) + (rnd() - 0.5) * 0.12;
+      if (t >= 5100) speed = Math.max(speed - (t - 5100) / 300 * 1.6, 1.2); // cool-down jog
+      records.push({ t: t0 + t, hr: Math.round(base + hrNoise), speed: +speed.toFixed(3) });
     }
     return { records: records, sports: ['Running (demo)'] };
   }
