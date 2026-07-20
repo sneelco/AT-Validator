@@ -12,13 +12,31 @@ Based on the heart-rate drift field test popularized by coach Scott Johnston
 heart rate for **60 minutes** and see whether heart rate stays coupled to the
 work, or drifts away from it.
 
-**Primary metric — Pa:HR decoupling.** When the file carries speed data, the
-verdict is driven by aerobic decoupling: speed per heartbeat in the first half
-of the window vs the second half, as a percent decline. This is the standard
-decoupling formulation, and it self-corrects for small pace changes — slowing
-down to hold heart rate flat no longer flatters the result. Without speed data
-(e.g. a bare CSV), the tool falls back to HR-only drift (second-half average vs
-first-half average) and says so.
+**Primary metric — Pa:HR decoupling.** When the file carries *trustworthy*
+speed data, the verdict is driven by aerobic decoupling: speed per heartbeat in
+the first half of the window vs the second half, as a percent decline. This is
+the standard decoupling formulation, and it self-corrects for small pace
+changes — slowing down to hold heart rate flat no longer flatters the result.
+
+Whether speed is trustworthy depends on **who wrote the file**, not what sport
+it says: the tool reads the FIT file's `file_id`/`device_info` provenance
+(manufacturer, product, GPS fixes) and applies a trust matrix. A treadmill file
+written by Peloton (or another fitness-equipment maker) carries true
+belt/machine speed — trusted, arguably better than GPS. An outdoor file with
+GPS fixes is trusted. The same treadmill workout recorded natively on a watch
+carries a wrist-accelerometer *estimate* — untrusted, so the verdict falls back
+to HR-only drift with the estimated-pace decoupling shown for reference only.
+Unknown provenance is untrusted by default, and the verdict says why.
+Equipment like Peloton writes cumulative distance rather than per-record speed;
+the tool derives speed from the distance channel in that case (it inherits the
+belt's trust). A collapsible "File details" section shows the raw device
+metadata so unrecognized manufacturer IDs can be reported and added.
+
+Regardless of source, when Pa:HR and HR-only drift disagree by more than 2.5
+percentage points a warning surfaces the implied pace change and the verdict
+falls back to HR-only: belts are accurate, but a mid-run speed change is still
+a protocol violation worth knowing about. Files with no speed at all (e.g. a
+bare CSV) use HR-only drift and say so.
 
 **Bands.** The decoupling percentage maps to a three-band verdict:
 

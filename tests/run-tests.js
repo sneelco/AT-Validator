@@ -8,7 +8,8 @@ const fs = require('fs');
 const path = require('path');
 const { parseFit } = require('../js/fit-parser.js');
 const { parseCsv } = require('../js/csv-parser.js');
-const { analyzeWindow, rangeStats, detectBaseline, evaluate, EVAL } = require('../js/analysis.js');
+const { analyzeWindow, rangeStats, detectBaseline, evaluate, EVAL,
+  assessSpeedTrust, deriveSpeedFromDistance } = require('../js/analysis.js');
 
 let failures = 0;
 function check(name, cond, detail) {
@@ -302,17 +303,20 @@ function has(ev, code) { return ev.findings.some(f => f.code === code); }
   check('hot-start: Pa:HR used', ev.primary.method === 'pa:hr');
 }
 
-// Flat HR but second half 5% slower -> pace-slowed warning, low confidence,
-// and Pa:HR exposes the hidden drift as ~5% (amber) despite 0% HR drift.
+// Flat HR but second half 5% slower -> pace-slowed warning + the cross-check
+// fires (Pa:HR ~5% vs HR-only 0% disagree by >2.5 pts), so the verdict falls
+// back to HR-only with the Pa:HR number demoted to a secondary stat.
 {
   const samples = [];
   for (let t = 0; t <= 3600; t++) samples.push({ t, hr: 140, speed: t < 1800 ? 3.0 : 2.85 });
   const { ev } = run(samples);
-  check('slowdown: warning emitted', has(ev, 'pace-slowed'));
+  check('slowdown: pace warning emitted', has(ev, 'pace-slowed'));
+  check('slowdown: disagreement warning too', has(ev, 'speed-hr-disagree'));
   check('slowdown: confidence low', ev.confidence === 'low', ev.confidence);
-  check('slowdown: Pa:HR sees ~5%', ev.primary.value > 4 && ev.primary.value < 6,
-    ev.primary.value.toFixed(2));
-  check('slowdown: band amber (self-corrected)', ev.band === 'amber', ev.band);
+  check('slowdown: falls back to hr-only', ev.primary.method === 'hr-only' &&
+    ev.primary.reason === 'disagreement', ev.primary.method + '/' + ev.primary.reason);
+  check('slowdown: Pa:HR demoted to secondary ~5%', ev.secondary &&
+    ev.secondary.value > 4 && ev.secondary.value < 6, ev.secondary && ev.secondary.value.toFixed(2));
 }
 
 // Plateau-then-break at a known minute -> breakpoint within +/-2 min.
@@ -379,6 +383,178 @@ function has(ev, code) { return ev.findings.some(f => f.code === code); }
   const ev = evaluate(samples, r, {});
   check('insufficient: passed through', ev.verdict === 'insufficient' && ev.band === null);
   check('evaluate(garbage) no throw', evaluate(null, null, null).verdict === 'insufficient');
+}
+
+// ---- speed trust & cross-check --------------------------------------------
+console.log('speed trust');
+
+// Treadmill (no GPS): drifting accelerometer speed must not drive the verdict.
+// HR flat (green by HR-only); accelerometer "speed" decays 6% -> Pa:HR ~6%.
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) {
+    samples.push({ t, hr: 140, speed: 3.0 * (1 - 0.06 * t / 3600) });
+  }
+  const r = analyzeWindow(samples, 0, SET);
+  const ev = evaluate(samples, r, { speedTrusted: false });
+  check('treadmill: hr-only primary', ev.primary.method === 'hr-only');
+  check('treadmill: untrusted reason', ['untrusted-speed', 'disagreement'].includes(ev.primary.reason),
+    ev.primary.reason);
+  check('treadmill: band green (HR flat)', ev.band === 'green', ev.band);
+  check('treadmill: untrusted-speed finding', ev.findings.some(f => f.code === 'speed-untrusted'));
+  check('treadmill: secondary marked untrusted', ev.secondary && ev.secondary.untrusted === true);
+}
+
+// Outdoor with consistent GPS speed -> Pa:HR stays primary (trusted default).
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) samples.push({ t, hr: 140 + 4 * t / 3600, speed: 3.0 });
+  const r = analyzeWindow(samples, 0, SET);
+  const ev = evaluate(samples, r, { speedTrusted: true });
+  check('outdoor: pa:hr primary', ev.primary.method === 'pa:hr', ev.primary.method);
+  check('outdoor: no disagreement warning', !ev.findings.some(f => f.code === 'speed-hr-disagree'));
+  check('outdoor: no secondary', !ev.secondary);
+}
+
+// Disagreement fixture: Pa:HR ~-0.1% vs HR-only ~+4.6% -> warning + fallback.
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) {
+    const hr = 138 + 13 * t / 3600;
+    const speed = t < 1800 ? 3.0 : 3.14; // second half faster, masking HR drift
+    samples.push({ t, hr, speed });
+  }
+  const r = analyzeWindow(samples, 0, SET);
+  const ev = evaluate(samples, r, { speedTrusted: true });
+  check('disagree: warning emitted', ev.findings.some(f => f.code === 'speed-hr-disagree'));
+  check('disagree: hr-only primary', ev.primary.method === 'hr-only' &&
+    ev.primary.reason === 'disagreement', ev.primary.method + '/' + ev.primary.reason);
+  check('disagree: primary ~4.6%', ev.primary.value > 4 && ev.primary.value < 5.2,
+    ev.primary.value.toFixed(2));
+  check('disagree: Pa:HR near zero in secondary', ev.secondary &&
+    Math.abs(ev.secondary.value) < 1, ev.secondary && ev.secondary.value.toFixed(2));
+  check('disagree: band amber (from HR-only)', ev.band === 'amber', ev.band);
+  check('disagree: confidence low', ev.confidence === 'low');
+  check('disagree: finding mentions implied pace change',
+    ev.findings.find(f => f.code === 'speed-hr-disagree').text.includes('faster'));
+}
+
+// Parser flags on real fixtures (cross-checked against garmin-fit-sdk data).
+{
+  const outdoor = loadFit('garmin-fenix-5-bike.fit');
+  check('flags: outdoor ride hasGps', outdoor.hasGps === true);
+  const indoor = loadFit('sample-activity-indoor-trainer.fit');
+  check('flags: indoor trainer no GPS', indoor.hasGps === false);
+  check('flags: subSports exposed', Array.isArray(indoor.subSports));
+}
+
+// ---- provenance & speed trust matrix --------------------------------------
+console.log('provenance');
+
+// Hand-crafted Peloton-style FIT: file_id(manufacturer=peloton, product_name),
+// session(running/treadmill), distance-only records (like the real Tread files).
+function buildPelotonFit() {
+  const parts = [];
+  const pName = 'HOME_TREAD';
+  // file_id def: type(0,1,enum) manufacturer(1,2,u16) product(2,2,u16) product_name(8,11,string)
+  parts.push([0x40, 0, 0, 0x00, 0x00, 4,
+    0, 1, 0x00,  1, 2, 0x84,  2, 2, 0x84,  8, pName.length + 1, 0x07]);
+  parts.push([0x00, 4, 340 & 0xFF, 340 >> 8, 10, 0,
+    ...Array.from(pName).map(c => c.charCodeAt(0)), 0]);
+  // session def: sport(5) subSport(6)
+  parts.push([0x41, 0, 0, 0x12, 0x00, 2, 5, 1, 0x00, 6, 1, 0x00]);
+  parts.push([0x01, 1, 1]); // running, treadmill
+  // record def: timestamp(253,4,u32) hr(3,1,u8) distance(5,4,u32 scale 100)
+  parts.push([0x42, 0, 0, 0x14, 0x00, 3, 253, 4, 0x86, 3, 1, 0x02, 5, 4, 0x86]);
+  const t0 = 1000000000;
+  for (let i = 0; i < 10; i++) {
+    const ts = t0 + i, dist = i * 280; // 2.8 m/s in cm
+    parts.push([0x02,
+      ts & 0xFF, (ts >> 8) & 0xFF, (ts >> 16) & 0xFF, (ts >> 24) & 0xFF,
+      120 + i,
+      dist & 0xFF, (dist >> 8) & 0xFF, (dist >> 16) & 0xFF, (dist >> 24) & 0xFF]);
+  }
+  const body = parts.flat();
+  const buf = Buffer.alloc(12 + body.length + 2);
+  buf[0] = 12; buf[1] = 0x10;
+  buf.writeUInt16LE(2132, 2);
+  buf.writeUInt32LE(body.length, 4);
+  buf.write('.FIT', 8);
+  Buffer.from(body).copy(buf, 12);
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+}
+
+{
+  const r = parseFit(buildPelotonFit());
+  const prov = r.provenance;
+  check('peloton fixture: manufacturer', prov.manufacturer === 'Peloton' && prov.manufacturerId === 340,
+    JSON.stringify(prov));
+  check('peloton fixture: product name string', prov.product === 'HOME_TREAD', prov.product);
+  check('peloton fixture: treadmill sub-sport', prov.subSport === 'Treadmill');
+  check('peloton fixture: no gps', prov.hasGps === false);
+  check('peloton fixture: distance parsed', r.records.every(x => x.distance !== undefined));
+  const trust = assessSpeedTrust(prov);
+  check('peloton fixture: speed TRUSTED (belt)', trust.trusted === true && trust.source === 'equipment');
+  check('peloton fixture: belt label', trust.label === 'belt/machine speed (Peloton)', trust.label);
+}
+
+// Real-file provenance (values verified against garmin-fit-sdk).
+{
+  const outdoor = loadFit('garmin-fenix-5-bike.fit');
+  check('fenix5: provenance Garmin Fenix 5', outdoor.provenance.manufacturer === 'Garmin' &&
+    outdoor.provenance.product === 'Fenix 5', JSON.stringify(outdoor.provenance));
+  const t1 = assessSpeedTrust(outdoor.provenance);
+  check('fenix5: GPS trusted', t1.trusted === true && t1.source === 'gps');
+
+  const indoor = loadFit('sample-activity-indoor-trainer.fit');
+  check('edge800: provenance Garmin Edge 800', indoor.provenance.product === 'Edge 800',
+    JSON.stringify(indoor.provenance));
+  const t2 = assessSpeedTrust(indoor.provenance);
+  check('edge800: indoor watch-estimate untrusted', t2.trusted === false && t2.source === 'watch-estimate');
+}
+
+// Trust matrix corner cases.
+{
+  const unknown = assessSpeedTrust({ manufacturerId: 9999, manufacturer: null, hasGps: false });
+  check('unknown maker: untrusted', unknown.trusted === false && unknown.source === 'unknown');
+  check('unknown maker: says why', unknown.reason.includes('9999'), unknown.reason);
+  const noProv = assessSpeedTrust(null);
+  check('no provenance: untrusted with reason', noProv.trusted === false && noProv.reason.length > 0);
+  const watchGps = assessSpeedTrust({ manufacturerId: 1, manufacturer: 'Garmin', hasGps: true });
+  check('garmin outdoor: GPS trusted', watchGps.trusted === true && watchGps.source === 'gps');
+}
+
+// deriveSpeedFromDistance: Peloton-style distance-only samples.
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) samples.push({ t, hr: 130, distance: t * 2.8 });
+  const filled = deriveSpeedFromDistance(samples);
+  check('derive: fills nearly all samples', filled > 3500, String(filled));
+  check('derive: ~2.8 m/s', Math.abs(samples[1800].speed - 2.8) < 0.01, String(samples[1800].speed));
+  // trusted belt speed + flat everything -> Pa:HR primary, green
+  const r = analyzeWindow(samples, 0, SET);
+  const ev = evaluate(samples, r, { speedTrust: { trusted: true, source: 'equipment',
+    label: 'belt/machine speed (Peloton)', reason: 'belt' } });
+  check('derive+trust: pa:hr primary', ev.primary.method === 'pa:hr', ev.primary.method);
+  check('derive+trust: band green', ev.band === 'green');
+  // does NOT derive when speed already present
+  const withSpeed = [];
+  for (let t = 0; t <= 100; t++) withSpeed.push({ t, hr: 130, speed: 2.0, distance: t * 2.8 });
+  check('derive: skips when speed exists', deriveSpeedFromDistance(withSpeed) === 0 &&
+    withSpeed[50].speed === 2.0);
+}
+
+// evaluate with a trust OBJECT (untrusted): finding text names the source.
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) samples.push({ t, hr: 140, speed: 3.0 * (1 - 0.06 * t / 3600) });
+  const r = analyzeWindow(samples, 0, SET);
+  const ev = evaluate(samples, r, { speedTrust: { trusted: false, source: 'watch-estimate',
+    label: 'watch estimate (accelerometer)', reason: 'indoor recording by Garmin' } });
+  check('trust-object: hr-only primary', ev.primary.method === 'hr-only');
+  const f = ev.findings.find(x => x.code === 'speed-untrusted');
+  check('trust-object: finding names source', f && f.text.includes('watch estimate (accelerometer)'),
+    f && f.text.slice(0, 80));
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nall tests passed');

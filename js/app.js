@@ -32,7 +32,7 @@
    'set-window', 'set-threshold', 'set-split', 'set-smooth', 'reset-settings',
    'analysis-section', 'load-error', 'slider-row',
    'baseline-slider', 'baseline-readout', 'baseline-reset', 'baseline-warning',
-   'apply-detected'
+   'apply-detected', 'file-details', 'file-details-pre'
   ].forEach(function (id) { els[id] = document.getElementById(id); });
 
   var chart = new window.ATV.chart.ATChart(els.chart, {
@@ -105,14 +105,23 @@
     // Absolute timestamps (FIT always; CSV when detected) → keep wall clock.
     var absolute = parsed.csvAbsolute !== undefined ? parsed.csvAbsolute : true;
     state.absoluteT0 = absolute ? t0 : null;
-    state.samples = recs.map(function (r) { return { t: r.t - t0, hr: r.hr, speed: r.speed }; });
+    state.samples = recs.map(function (r) {
+      return { t: r.t - t0, hr: r.hr, speed: r.speed, distance: r.distance };
+    });
+    // Equipment like Peloton writes cumulative distance but no per-record
+    // speed; derive it so decoupling has a channel (inherits distance's trust).
+    analysis.deriveSpeedFromDistance(state.samples);
 
     var last = parsed.records[parsed.records.length - 1];
     state.meta = {
       name: name,
       sports: parsed.sports || [],
-      distance: last && last.distance !== undefined ? last.distance : null
+      subSports: parsed.subSports || [],
+      distance: last && last.distance !== undefined ? last.distance : null,
+      provenance: parsed.provenance || null
     };
+    state.speedTrust = analysis.assessSpeedTrust(parsed.provenance || null);
+    renderFileDetails(parsed.debug || null);
     state.windowStart = 0;
     state.baselineOverride = null;
     state.detected = analysis.detectBaseline(state.samples);
@@ -130,6 +139,19 @@
     els['analysis-section'].hidden = false;
     refresh();
     els['analysis-section'].scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  // Raw file_id / device_info / session dump so unknown manufacturer IDs in
+  // real files can be identified and added to the lookup tables.
+  function renderFileDetails(debug) {
+    var details = els['file-details'];
+    if (!debug || (!debug.fileIds.length && !debug.deviceInfos.length)) {
+      details.hidden = true;
+      return;
+    }
+    els['file-details-pre'].textContent = JSON.stringify(debug, null, 2);
+    details.hidden = false;
+    details.open = false;
   }
 
   // The window actually analyzed: the configured length, capped to the
@@ -187,7 +209,8 @@
 
     var ev = analysis.evaluate(s, result, {
       baselineOverride: state.baselineOverride,
-      detectedBaseline: detectedBaseline()
+      detectedBaseline: detectedBaseline(),
+      speedTrust: state.speedTrust
     });
 
     renderSlider(winLen);
@@ -254,8 +277,10 @@
     warn.textContent = '';
     if (!cf) { warn.hidden = true; return; }
     if (winLen < set.windowMin * 60 - 1) cf.verdict = 'insufficient';
-    var cfEv = analysis.evaluate(state.samples, cf, { detectedBaseline: det });
-    var curEv = analysis.evaluate(state.samples, r, { detectedBaseline: det });
+    var cfEv = analysis.evaluate(state.samples, cf,
+      { detectedBaseline: det, speedTrust: state.speedTrust });
+    var curEv = analysis.evaluate(state.samples, r,
+      { detectedBaseline: det, speedTrust: state.speedTrust });
     var name = cfEv.verdict === 'insufficient' ? 'INSUFFICIENT' : BAND_NAMES[cfEv.band];
     var rise = cfEv.primary ? ' (' + fmtSigned(cfEv.primary.value, 1) + '%)' : '';
     warn.appendChild(document.createTextNode(
@@ -273,7 +298,22 @@
   function renderMeta() {
     var m = state.meta;
     var parts = [m.name];
-    if (m.sports.length) parts.push(m.sports.join(', '));
+    if (m.sports.length) {
+      var sportsLabel = m.sports.join(', ');
+      var subs = (m.subSports || []).filter(function (n) { return n !== 'Generic'; });
+      if (subs.length) sportsLabel += ' (' + subs.join(', ') + ')';
+      parts.push(sportsLabel);
+    }
+    var prov = m.provenance;
+    if (prov && prov.manufacturer) {
+      var device = prov.manufacturer + (prov.product ? ' ' + prov.product : '');
+      var st = state.speedTrust || {};
+      var phrase = st.source === 'equipment' ? 'belt/machine speed'
+        : st.source === 'gps' ? 'GPS'
+        : st.source === 'watch-estimate' ? 'no GPS \u2014 estimated pace'
+        : 'speed source unknown';
+      parts.push('recorded by ' + device + ' \u00b7 ' + phrase);
+    }
     var total = state.samples[state.samples.length - 1].t;
     parts.push('Duration ' + fmtElapsed(total));
     if (m.distance) parts.push((m.distance / 1000).toFixed(2) + ' km');
@@ -292,13 +332,20 @@
   };
   var BAND_NAMES = { green: 'AEROBIC', amber: 'BORDERLINE', red: 'ABOVE THRESHOLD' };
 
+  var HR_ONLY_REASONS = {
+    'no-speed': 'no speed data for Pa:HR',
+    'untrusted-speed': 'indoor activity \u2014 accelerometer speed not trusted',
+    'disagreement': 'speed channel contradicts the HR trace \u2014 see findings'
+  };
+
   function primaryLine(ev) {
     if (ev.primary.method === 'pa:hr') {
       return 'Pa:HR decoupling ' + fmtSigned(ev.primary.value, 1) +
         '% \u2014 speed per heartbeat, first half vs second half of the window.';
     }
     return 'HR-only drift ' + fmtSigned(ev.primary.value, 1) +
-      '% \u2014 second-half vs first-half average (no speed data for Pa:HR).';
+      '% \u2014 second-half vs first-half average (' +
+      (HR_ONLY_REASONS[ev.primary.reason] || HR_ONLY_REASONS['no-speed']) + ').';
   }
 
   function nextStepLine(ev, r) {
@@ -380,9 +427,19 @@
         unit: 'bpm', sub: 'limit for the window' },
       { label: ev.primary.method === 'pa:hr' ? 'Decoupling (Pa:HR)' : 'HR drift (halves)',
         value: fmtSigned(ev.primary.value, 1), unit: '%',
-        sub: ev.primary.method === 'pa:hr' ? 'speed/HR, 1st vs 2nd half' : '2nd half vs 1st half',
+        sub: ev.primary.method === 'pa:hr'
+          ? 'speed/HR \u00b7 ' + ((state.speedTrust && state.speedTrust.label) || 'speed')
+          : '2nd half vs 1st half',
         delta: ev.band === 'green' ? 'good' : ev.band === 'red' ? 'bad'
           : ev.band === 'amber' ? 'warn' : null },
+      ev.secondary ? {
+        label: 'Est. decoupling (Pa:HR)', value: fmtSigned(ev.secondary.value, 1), unit: '%',
+        sub: ev.secondary.untrusted
+          ? ((state.speedTrust && state.speedTrust.source === 'unknown')
+              ? 'speed source unknown \u2014 not trusted'
+              : 'estimated pace \u2014 accelerometer, not belt speed; unreliable indoors')
+          : 'disagrees with HR-only drift \u2014 see findings'
+      } : null,
       { label: 'End-of-window rise', value: r.endRisePct !== null ? fmtSigned(r.endRisePct, 1) : '—',
         unit: '%', sub: r.endRiseBpm !== null ? fmtSigned(r.endRiseBpm, 0) + ' bpm vs start · classic view' : '' },
       { label: 'Average HR', value: Math.round(r.window.avg), unit: 'bpm',
@@ -398,7 +455,7 @@
     ];
     var host = els.stats;
     host.textContent = '';
-    tiles.forEach(function (t) {
+    tiles.filter(Boolean).forEach(function (t) {
       var tile = document.createElement('div');
       tile.className = 'stat-tile';
       var lab = document.createElement('div');
