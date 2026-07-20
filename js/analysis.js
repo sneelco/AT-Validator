@@ -67,9 +67,11 @@
 
     // Baseline: time-weighted average HR over the first `smoothSec` of the
     // window (a single-sample baseline would be hostage to HR monitor noise).
+    // A manual override (settings.baselineOverride, bpm) takes precedence.
     var baseStats = rangeStats(samples, ws, Math.min(ws + settings.smoothSec, we));
-    if (!baseStats) return null;
-    var baseline = baseStats.avg;
+    var baselineAuto = baseStats ? baseStats.avg : null;
+    var baseline = settings.baselineOverride != null ? settings.baselineOverride : baselineAuto;
+    if (baseline === null) return null;
     var threshold = baseline * (1 + settings.thresholdPct / 100);
 
     var win = rangeStats(samples, ws, we, threshold);

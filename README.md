@@ -26,6 +26,10 @@ verdict plus supporting statistics and splits.
   (Shift = 5-minute steps).
 - **Color-coded heart rate** — blue below the threshold, red above it, gray
   outside the analysis window.
+- **Refinable baseline** — the baseline defaults to the heart rate at the
+  window start (auto), and a vertical slider beside the chart lets you refine
+  it to your designated AeT heart rate; the threshold, verdict, stats, and
+  splits all follow. Moving or resizing the window resets the baseline to auto.
 - **Verdict + stats** — end-of-window rise vs. start, average/min/max HR,
   percent of time over/under threshold, headroom below the threshold, and
   first-half vs. second-half HR drift.

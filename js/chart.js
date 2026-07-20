@@ -253,8 +253,21 @@
       ctx.stroke();
       ctx.restore();
 
-      // Baseline marker at window start.
+      // Baseline guide across the window (dotted — the designated start HR,
+      // which may be manually refined via the vertical slider).
       var bY = yOf(st.baseline);
+      ctx.save();
+      ctx.strokeStyle = P.series;
+      ctx.globalAlpha = 0.45;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 4]);
+      ctx.beginPath();
+      ctx.moveTo(wsX, bY);
+      ctx.lineTo(weX, bY);
+      ctx.stroke();
+      ctx.restore();
+
+      // Baseline marker at window start.
       ctx.beginPath();
       ctx.arc(wsX, bY, 4.5, 0, Math.PI * 2);
       ctx.fillStyle = P.series;
@@ -273,7 +286,7 @@
       var tlx = Math.min(wsX + 6, L.plotX + L.plotW - ctx.measureText(thLabel).width - 4);
       ctx.fillText(thLabel, tlx, thY - 3);
       ctx.textBaseline = 'top';
-      var bLabel = 'start ' + Math.round(st.baseline);
+      var bLabel = 'base ' + Math.round(st.baseline);
       var blx = Math.max(wsX - ctx.measureText(bLabel).width - 8, L.plotX + 2);
       ctx.fillText(bLabel, blx, Math.min(bY + 6, L.plotY + L.plotH - 12));
     } else {
