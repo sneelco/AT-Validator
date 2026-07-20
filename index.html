@@ -71,8 +71,14 @@
     </form>
 
     <div class="chart-card">
-      <div class="chart-hint">Drag the shaded window to move it · drag its edges to resize · arrow keys nudge (⇧ = 5&nbsp;min) ·
-        vertical slider refines the baseline HR</div>
+      <div class="chart-hint-row">
+        <div class="chart-hint">Drag the shaded window to move it · drag its edges to resize · arrow keys nudge (⇧ = 5&nbsp;min) ·
+          vertical slider refines the baseline HR</div>
+        <div id="speed-toggle" class="speed-toggle" role="group" aria-label="Pace or speed display" hidden>
+          <button type="button" id="mode-pace" class="active" aria-pressed="true">Pace</button>
+          <button type="button" id="mode-speed" aria-pressed="false">Speed</button>
+        </div>
+      </div>
       <div class="chart-flex">
         <div class="baseline-col" title="Baseline heart rate">
           <input id="baseline-slider" type="range" min="60" max="200" step="1" value="140"
