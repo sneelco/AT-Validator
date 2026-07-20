@@ -105,7 +105,7 @@
     // Absolute timestamps (FIT always; CSV when detected) → keep wall clock.
     var absolute = parsed.csvAbsolute !== undefined ? parsed.csvAbsolute : true;
     state.absoluteT0 = absolute ? t0 : null;
-    state.samples = recs.map(function (r) { return { t: r.t - t0, hr: r.hr }; });
+    state.samples = recs.map(function (r) { return { t: r.t - t0, hr: r.hr, speed: r.speed }; });
 
     var last = parsed.records[parsed.records.length - 1];
     state.meta = {
@@ -185,11 +185,16 @@
       splitLen: set.splitMin * 60
     });
 
+    var ev = analysis.evaluate(s, result, {
+      baselineOverride: state.baselineOverride,
+      detectedBaseline: detectedBaseline()
+    });
+
     renderSlider(winLen);
-    renderBaseline(result);
+    renderBaseline(result, ev);
     renderMeta();
-    renderVerdict(result);
-    renderStats(result);
+    renderVerdict(result, ev);
+    renderStats(result, ev);
     renderSplits(result);
   }
 
@@ -213,7 +218,7 @@
     return 'auto (unsettled \u2014 no clear plateau found)';
   }
 
-  function renderBaseline(r) {
+  function renderBaseline(r, ev) {
     els['apply-detected'].hidden = detectedBaseline() === null;
     var manual = state.baselineOverride !== null;
     var slider = els['baseline-slider'];
@@ -249,15 +254,17 @@
     warn.textContent = '';
     if (!cf) { warn.hidden = true; return; }
     if (winLen < set.windowMin * 60 - 1) cf.verdict = 'insufficient';
-    var names = { pass: 'PASS', fail: 'FAIL', insufficient: 'INSUFFICIENT' };
-    var rise = cf.endRisePct !== null ? ' (' + fmtSigned(cf.endRisePct, 1) + '%)' : '';
+    var cfEv = analysis.evaluate(state.samples, cf, { detectedBaseline: det });
+    var curEv = analysis.evaluate(state.samples, r, { detectedBaseline: det });
+    var name = cfEv.verdict === 'insufficient' ? 'INSUFFICIENT' : BAND_NAMES[cfEv.band];
+    var rise = cfEv.primary ? ' (' + fmtSigned(cfEv.primary.value, 1) + '%)' : '';
     warn.appendChild(document.createTextNode(
       '\u26a0 Manual baseline ' + Math.round(state.baselineOverride) +
       ' vs detected plateau ' + Math.round(det) + ' \u2014 verdict ' +
-      (cf.verdict === r.verdict ? 'stays ' : 'changes to ')));
+      (cfEv.verdict === curEv.verdict ? 'stays ' : 'changes to ')));
     var strong = document.createElement('strong');
-    strong.className = cf.verdict;
-    strong.textContent = names[cf.verdict];
+    strong.className = cfEv.verdict === 'insufficient' ? 'insufficient' : cfEv.band;
+    strong.textContent = name;
     warn.appendChild(strong);
     warn.appendChild(document.createTextNode(rise + ' at detected value.'));
     warn.hidden = false;
@@ -278,51 +285,106 @@
     els['activity-meta'].textContent = parts.join('  ·  ');
   }
 
-  function renderVerdict(r) {
-    var v = els.verdict;
-    v.className = 'verdict ' + r.verdict;
-    var title, body;
-    var riseStr = r.endRisePct !== null
-      ? fmtSigned(r.endRisePct, 1) + '% (' + fmtSigned(r.endRiseBpm, 0) + ' bpm)'
-      : 'n/a';
-    if (r.verdict === 'pass') {
-      title = 'Below aerobic threshold';
-      body = 'Heart rate at the end of the window averaged ' + Math.round(r.endAvg) +
-        ' bpm — a rise of ' + riseStr + ' from the starting ' + Math.round(r.baseline) +
-        ' bpm. That is within the ' + state.settings.thresholdPct +
-        '% limit, so this effort looks aerobic.';
-    } else if (r.verdict === 'fail') {
-      title = 'Above aerobic threshold';
-      body = 'Heart rate at the end of the window averaged ' + Math.round(r.endAvg) +
-        ' bpm — a rise of ' + riseStr + ' from the starting ' + Math.round(r.baseline) +
-        ' bpm, exceeding the ' + state.settings.thresholdPct +
-        '% limit. The starting heart rate was likely above your aerobic threshold.';
-    } else {
-      title = 'Not enough data for a verdict';
-      var winMin = state.settings.windowMin;
-      var total = state.samples[state.samples.length - 1].t;
-      if (total < winMin * 60 - 1) {
-        body = 'The test needs a full ' + winMin + '-minute window, but this activity is only ' +
-          fmtElapsed(total) + ' long. Stats below describe the whole activity anyway.';
-      } else {
-        body = 'The test needs a full ' + winMin + '-minute window with continuous heart-rate ' +
-          'data (coverage here: ' + Math.round(r.coverage * 100) + '%). Stats below still ' +
-          'describe the data that is present.';
-      }
+  var BAND_TITLES = {
+    green: 'Aerobic \u2014 below threshold',
+    amber: 'Borderline \u2014 at the edge of threshold',
+    red: 'Above aerobic threshold'
+  };
+  var BAND_NAMES = { green: 'AEROBIC', amber: 'BORDERLINE', red: 'ABOVE THRESHOLD' };
+
+  function primaryLine(ev) {
+    if (ev.primary.method === 'pa:hr') {
+      return 'Pa:HR decoupling ' + fmtSigned(ev.primary.value, 1) +
+        '% \u2014 speed per heartbeat, first half vs second half of the window.';
     }
-    v.querySelector('.verdict-title').textContent = title;
-    v.querySelector('.verdict-body').textContent = body;
+    return 'HR-only drift ' + fmtSigned(ev.primary.value, 1) +
+      '% \u2014 second-half vs first-half average (no speed data for Pa:HR).';
   }
 
-  function renderStats(r) {
+  function nextStepLine(ev, r) {
+    var base = Math.round(r.baseline);
+    if (ev.band === 'green') {
+      return 'This pace at ~' + base + ' bpm is at or below AeT. If a future hour held flat above ' +
+        'your current ceiling, that would be evidence for raising it.';
+    }
+    if (ev.band === 'amber') {
+      return 'Retest starting slightly slower \u2014 settle a few bpm below ' + base +
+        ' and hold; a clean flat hour settles it.';
+    }
+    return 'The effort started above threshold \u2014 retest at a lower settled heart rate (below ' +
+      base + ' bpm).';
+  }
+
+  function renderVerdict(r, ev) {
+    var v = els.verdict;
+    var body = v.querySelector('.verdict-body');
+    body.textContent = '';
+    var old = v.querySelector('.verdict-findings');
+    if (old) old.remove();
+    var oldNext = v.querySelector('.verdict-next');
+    if (oldNext) oldNext.remove();
+
+    if (ev.verdict === 'insufficient') {
+      v.className = 'verdict insufficient';
+      v.querySelector('.verdict-title').textContent = 'Not enough data for a verdict';
+      var winMin = state.settings.windowMin;
+      var total = state.samples[state.samples.length - 1].t;
+      body.textContent = total < winMin * 60 - 1
+        ? 'The test needs a full ' + winMin + '-minute window, but this activity is only ' +
+          fmtElapsed(total) + ' long. Stats below describe the whole activity anyway.'
+        : 'The test needs a full ' + winMin + '-minute window with continuous heart-rate data ' +
+          '(coverage here: ' + Math.round(r.coverage * 100) + '%). Stats below still describe ' +
+          'the data that is present.';
+      return;
+    }
+
+    v.className = 'verdict ' + ev.band;
+    v.querySelector('.verdict-title').textContent =
+      BAND_TITLES[ev.band] + ' \u00b7 ' + ev.confidence + ' confidence';
+
+    body.appendChild(document.createTextNode(primaryLine(ev) + ' '));
+    var sec = document.createElement('span');
+    sec.className = 'verdict-secondary';
+    sec.textContent = r.endRisePct !== null
+      ? 'End-of-window rise (classic presentation): ' + fmtSigned(r.endRisePct, 1) + '% (' +
+        fmtSigned(r.endRiseBpm, 0) + ' bpm vs the ' + Math.round(r.baseline) + ' bpm baseline).'
+      : '';
+    body.appendChild(sec);
+
+    if (ev.findings.length) {
+      var ul = document.createElement('ul');
+      ul.className = 'verdict-findings';
+      ev.findings.forEach(function (f) {
+        var li = document.createElement('li');
+        var chip = document.createElement('span');
+        chip.className = 'sev sev-' + f.severity;
+        chip.textContent = f.severity;
+        li.appendChild(chip);
+        li.appendChild(document.createTextNode(' ' + f.text));
+        ul.appendChild(li);
+      });
+      v.appendChild(ul);
+    }
+
+    var next = document.createElement('div');
+    next.className = 'verdict-next';
+    next.textContent = nextStepLine(ev, r);
+    v.appendChild(next);
+  }
+
+  function renderStats(r, ev) {
     var tiles = [
       { label: 'Baseline HR', value: Math.round(r.baseline), unit: 'bpm',
         sub: baselineSourceLabel() },
       { label: 'Threshold (+' + state.settings.thresholdPct + '%)', value: Math.round(r.threshold),
         unit: 'bpm', sub: 'limit for the window' },
+      { label: ev.primary.method === 'pa:hr' ? 'Decoupling (Pa:HR)' : 'HR drift (halves)',
+        value: fmtSigned(ev.primary.value, 1), unit: '%',
+        sub: ev.primary.method === 'pa:hr' ? 'speed/HR, 1st vs 2nd half' : '2nd half vs 1st half',
+        delta: ev.band === 'green' ? 'good' : ev.band === 'red' ? 'bad'
+          : ev.band === 'amber' ? 'warn' : null },
       { label: 'End-of-window rise', value: r.endRisePct !== null ? fmtSigned(r.endRisePct, 1) : '—',
-        unit: '%', sub: r.endRiseBpm !== null ? fmtSigned(r.endRiseBpm, 0) + ' bpm vs start' : '',
-        delta: r.endRisePct !== null ? (r.endRisePct > state.settings.thresholdPct ? 'bad' : 'good') : null },
+        unit: '%', sub: r.endRiseBpm !== null ? fmtSigned(r.endRiseBpm, 0) + ' bpm vs start · classic view' : '' },
       { label: 'Average HR', value: Math.round(r.window.avg), unit: 'bpm',
         sub: Math.round(r.window.min) + '–' + Math.round(r.window.max) + ' bpm range' },
       { label: 'Time under threshold', value: r.window.pctUnder.toFixed(1), unit: '%',
@@ -332,10 +394,7 @@
         delta: r.window.pctOver > 5 ? 'bad' : null },
       { label: 'Headroom', value: fmtSigned(r.headroomPct, 1), unit: '%',
         sub: fmtSigned(r.headroomBpm, 1) + ' bpm avg below threshold',
-        delta: r.headroomBpm < 0 ? 'bad' : 'good' },
-      { label: 'HR drift (halves)', value: r.driftPct !== null ? fmtSigned(r.driftPct, 1) : '—',
-        unit: '%', sub: '2nd half vs 1st half',
-        delta: r.driftPct !== null ? (r.driftPct > state.settings.thresholdPct ? 'bad' : 'good') : null }
+        delta: r.headroomBpm < 0 ? 'bad' : 'good' }
     ];
     var host = els.stats;
     host.textContent = '';

@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { parseFit } = require('../js/fit-parser.js');
 const { parseCsv } = require('../js/csv-parser.js');
-const { analyzeWindow, rangeStats, detectBaseline } = require('../js/analysis.js');
+const { analyzeWindow, rangeStats, detectBaseline, evaluate, EVAL } = require('../js/analysis.js');
 
 let failures = 0;
 function check(name, cond, detail) {
@@ -261,6 +261,125 @@ function noise(t, amp) { return amp * Math.sin(t * 7.13) * Math.cos(t * 1.91); }
 check('empty input: none', detectBaseline([]).confidence === 'none');
 check('single sample: none', detectBaseline([{ t: 0, hr: 140 }]).confidence === 'none');
 check('null input: none', detectBaseline(null).confidence === 'none');
+
+// ---- evaluate (banded, findings-based verdict) ----------------------------
+console.log('evaluate');
+
+function run(samples) {
+  const r = analyzeWindow(samples, 0, SET);
+  return { r, ev: evaluate(samples, r, {}) };
+}
+function has(ev, code) { return ev.findings.some(f => f.code === code); }
+
+// Clean flat hour with steady speed -> green via Pa:HR, no warnings.
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) samples.push({ t, hr: 140, speed: 3.0 });
+  const { ev } = run(samples);
+  check('flat+speed: band green', ev.band === 'green', ev.band);
+  check('flat+speed: Pa:HR used', ev.primary.method === 'pa:hr', ev.primary.method);
+  check('flat+speed: ~0% decoupling', Math.abs(ev.primary.value) < 0.5, ev.primary.value);
+  check('flat+speed: no warnings', !ev.findings.some(f => f.severity === 'warning'));
+  check('flat+speed: high confidence', ev.confidence === 'high', ev.confidence);
+}
+
+// Accelerating rise, borderline and still climbing -> amber + not-plateaued.
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) samples.push({ t, hr: 140 + 14 * Math.pow(t / 3600, 2) });
+  const { ev } = run(samples);
+  check('climbing: band amber', ev.band === 'amber', `${ev.band} @ ${ev.primary.value.toFixed(2)}%`);
+  check('climbing: hr-only (no speed)', ev.primary.method === 'hr-only');
+  check('climbing: not-plateaued finding', has(ev, 'not-plateaued'));
+}
+
+// Hot start, strong monotonic rise -> red.
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) samples.push({ t, hr: 150 + 25 * t / 3600, speed: 3.0 });
+  const { ev } = run(samples);
+  check('hot-start: band red', ev.band === 'red', `${ev.band} @ ${ev.primary.value.toFixed(2)}%`);
+  check('hot-start: Pa:HR used', ev.primary.method === 'pa:hr');
+}
+
+// Flat HR but second half 5% slower -> pace-slowed warning, low confidence,
+// and Pa:HR exposes the hidden drift as ~5% (amber) despite 0% HR drift.
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) samples.push({ t, hr: 140, speed: t < 1800 ? 3.0 : 2.85 });
+  const { ev } = run(samples);
+  check('slowdown: warning emitted', has(ev, 'pace-slowed'));
+  check('slowdown: confidence low', ev.confidence === 'low', ev.confidence);
+  check('slowdown: Pa:HR sees ~5%', ev.primary.value > 4 && ev.primary.value < 6,
+    ev.primary.value.toFixed(2));
+  check('slowdown: band amber (self-corrected)', ev.band === 'amber', ev.band);
+}
+
+// Plateau-then-break at a known minute -> breakpoint within +/-2 min.
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) {
+    const hr = t < 3000 ? 135 : 135 + (t - 3000) / 60 * 0.9; // break at 50:00
+    samples.push({ t, hr });
+  }
+  const { ev } = run(samples);
+  const bp = ev.findings.find(f => f.code === 'break-point');
+  check('break: finding present', !!bp);
+  check('break: within +/-2 min of 50:00', bp && Math.abs(bp.breakSec - 3000) <= 120,
+    bp && String(bp.breakSec));
+  check('break: plateau HR reported', bp && Math.abs(bp.plateauHr - 135) <= 1.5,
+    bp && String(bp.plateauHr));
+}
+
+// No speed channel -> HR-only drift, labeled as such.
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) samples.push({ t, hr: 140 + 6 * t / 3600 });
+  const { r, ev } = run(samples);
+  check('no-speed: hr-only method', ev.primary.method === 'hr-only');
+  check('no-speed: equals driftPct', close(ev.primary.value, r.driftPct, 1e-9));
+}
+
+// Band-edge value (~3.4%) -> green with a boundary finding.
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) samples.push({ t, hr: 140 + 9.68 * t / 3600 });
+  const { ev } = run(samples);
+  check('edge: band green', ev.band === 'green', `${ev.band} @ ${ev.primary.value.toFixed(2)}%`);
+  check('edge: within tolerance of 3.5', Math.abs(ev.primary.value - EVAL.AEROBIC_MAX_PCT) <= EVAL.EDGE_TOL_PCT,
+    ev.primary.value.toFixed(2));
+  check('edge: boundary finding', has(ev, 'band-edge'));
+}
+
+// Short analyzed window (30 min) -> caveat, still banded.
+{
+  const samples = [];
+  for (let t = 0; t <= 1800; t++) samples.push({ t, hr: 140 });
+  const r = analyzeWindow(samples, 0, Object.assign({}, SET, { windowLen: 1800 }));
+  const ev = evaluate(samples, r, {});
+  check('short-window: caveat', ev.findings.some(f => f.code === 'short-window'));
+  check('short-window: confidence medium', ev.confidence === 'medium', ev.confidence);
+}
+
+// Baseline mismatch -> warning finding, confidence capped low.
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) samples.push({ t, hr: 140 });
+  const r = analyzeWindow(samples, 0, Object.assign({}, SET, { baselineOverride: 135 }));
+  const ev = evaluate(samples, r, { baselineOverride: 135, detectedBaseline: 140 });
+  check('mismatch: finding present', has(ev, 'baseline-mismatch'));
+  check('mismatch: confidence low', ev.confidence === 'low', ev.confidence);
+}
+
+// Insufficient stays insufficient; evaluate never throws on junk.
+{
+  const samples = [];
+  for (let t = 0; t <= 1200; t++) samples.push({ t, hr: 140 });
+  const r = analyzeWindow(samples, 0, SET);
+  const ev = evaluate(samples, r, {});
+  check('insufficient: passed through', ev.verdict === 'insufficient' && ev.band === null);
+  check('evaluate(garbage) no throw', evaluate(null, null, null).verdict === 'insufficient');
+}
 
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nall tests passed');
 process.exit(failures ? 1 : 0);
