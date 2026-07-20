@@ -62,6 +62,10 @@
         <label for="set-smooth">Baseline avg</label>
         <div class="setting-input"><input id="set-smooth" type="number" min="5" max="600" step="5" value="30"><span>s</span></div>
       </div>
+      <div class="setting">
+        <label for="set-aet" title="The AeT ceiling you're testing — gates what the verdict may claim">Suspected AeT</label>
+        <div class="setting-input"><input id="set-aet" type="number" min="60" max="220" step="1" placeholder="&#8212;"><span>bpm</span></div>
+      </div>
       <div class="settings-actions">
         <button class="btn subtle" id="apply-detected" type="button" hidden
           title="Move the window back to the detected plateau and restore the detected baseline">

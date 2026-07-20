@@ -623,5 +623,77 @@ const TRUST = { speedTrust: { trusted: true, source: 'equipment', label: 'belt',
   check('step: mph variant', wMi && wMi.text.includes('mph'), wMi && wMi.text);
 }
 
+// ---- suspected-AeT gating --------------------------------------------------
+console.log('suspected AeT');
+
+function flatHour(hr) {
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) samples.push({ t, hr });
+  return samples;
+}
+
+// Baseline well BELOW suspected AeT: banded verdict kept, untested finding,
+// relation 'below' (app suppresses the raising-evidence line off this).
+{
+  const samples = flatHour(126);
+  const r = analyzeWindow(samples, 0, SET);
+  const ev = evaluate(samples, r, { suspectedAeT: 138 });
+  check('aet below: band still green', ev.band === 'green');
+  check('aet below: relation', ev.aetRelation === 'below');
+  const f = ev.findings.find(x => x.code === 'aet-untested');
+  check('aet below: untested finding', !!f);
+  check('aet below: says 12 bpm below and names 138',
+    f && f.text.includes('12 bpm below') && f.text.includes('138') &&
+    f.text.includes('does not test the threshold'), f && f.text);
+}
+
+// Baseline AT the suspected AeT: true-threshold-test finding.
+{
+  const samples = flatHour(137);
+  const r = analyzeWindow(samples, 0, SET);
+  const ev = evaluate(samples, r, { suspectedAeT: 138 });
+  check('aet near: relation', ev.aetRelation === 'near');
+  check('aet near: true-test finding', ev.findings.some(x => x.code === 'aet-true-test'));
+}
+
+// Baseline ABOVE suspected AeT with a green result: conservative-ceiling flag.
+{
+  const samples = flatHour(145);
+  const r = analyzeWindow(samples, 0, SET);
+  const ev = evaluate(samples, r, { suspectedAeT: 138 });
+  check('aet above green: relation', ev.aetRelation === 'above');
+  check('aet above green: conservative finding',
+    ev.findings.some(x => x.code === 'aet-conservative'));
+}
+
+// Baseline above but the result is red: no conservative claim.
+{
+  const samples = [];
+  for (let t = 0; t <= 3600; t++) samples.push({ t, hr: 145 + 14 * t / 3600 });
+  const r = analyzeWindow(samples, 0, SET);
+  const ev = evaluate(samples, r, { suspectedAeT: 138 });
+  check('aet above red: no conservative finding',
+    !ev.findings.some(x => x.code === 'aet-conservative'));
+  check('aet above red: relation still above', ev.aetRelation === 'above');
+}
+
+// Gray zone (4 bpm below): no AeT finding either way.
+{
+  const samples = flatHour(134);
+  const r = analyzeWindow(samples, 0, SET);
+  const ev = evaluate(samples, r, { suspectedAeT: 138 });
+  check('aet gray zone: no relation', ev.aetRelation === null);
+  check('aet gray zone: no findings', !ev.findings.some(x => /^aet-/.test(x.code)));
+}
+
+// Unset: no AeT findings, relation null (current behavior).
+{
+  const samples = flatHour(140);
+  const r = analyzeWindow(samples, 0, SET);
+  const ev = evaluate(samples, r, {});
+  check('aet unset: relation null', ev.aetRelation === null);
+  check('aet unset: no aet findings', !ev.findings.some(x => /^aet-/.test(x.code)));
+}
+
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nall tests passed');
 process.exit(failures ? 1 : 0);
