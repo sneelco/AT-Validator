@@ -21,6 +21,7 @@
     meta: null,            // { name, sports, distance }
     windowStart: 0,        // elapsed s
     units: 'metric',       // 'metric' | 'imperial' (persisted)
+    suspectedAeT: null,    // bpm the runner is testing as their ceiling (persisted)
     baselineOverride: null, // manual baseline (bpm), null = auto
     detected: null,        // detectBaseline() result for the loaded activity
     hrRange: null,         // [min, max] bpm of loaded activity
@@ -30,7 +31,7 @@
   var els = {};
   ['dropzone', 'file-input', 'demo-btn', 'chart', 'window-slider', 'window-readout',
    'stats', 'splits-body', 'splits-table', 'verdict', 'activity-meta', 'settings-form',
-   'set-window', 'set-threshold', 'set-split', 'set-smooth', 'reset-settings',
+   'set-window', 'set-threshold', 'set-split', 'set-smooth', 'set-aet', 'reset-settings',
    'analysis-section', 'load-error', 'slider-row',
    'baseline-slider', 'baseline-readout', 'baseline-reset', 'baseline-warning',
    'apply-detected', 'file-details', 'file-details-pre',
@@ -213,7 +214,8 @@
       windowLen: winLen,
       baseline: result.baseline,
       threshold: result.threshold,
-      splitLen: set.splitMin * 60
+      splitLen: set.splitMin * 60,
+      suspectedAeT: state.suspectedAeT
     });
 
     var ev = analysis.evaluate(s, result, {
@@ -221,7 +223,8 @@
       detectedBaseline: detectedBaseline(),
       speedTrust: state.speedTrust,
       units: state.units,
-      displayMode: chart.speedMode
+      displayMode: chart.speedMode,
+      suspectedAeT: state.suspectedAeT
     });
 
     renderSlider(winLen);
@@ -290,10 +293,12 @@
     if (winLen < set.windowMin * 60 - 1) cf.verdict = 'insufficient';
     var cfEv = analysis.evaluate(state.samples, cf,
       { detectedBaseline: det, speedTrust: state.speedTrust,
-        units: state.units, displayMode: chart.speedMode });
+        units: state.units, displayMode: chart.speedMode,
+        suspectedAeT: state.suspectedAeT });
     var curEv = analysis.evaluate(state.samples, r,
       { detectedBaseline: det, speedTrust: state.speedTrust,
-        units: state.units, displayMode: chart.speedMode });
+        units: state.units, displayMode: chart.speedMode,
+        suspectedAeT: state.suspectedAeT });
     var name = cfEv.verdict === 'insufficient' ? 'INSUFFICIENT' : BAND_NAMES[cfEv.band];
     var rise = cfEv.primary ? ' (' + fmtSigned(cfEv.primary.value, 1) + '%)' : '';
     warn.appendChild(document.createTextNode(
@@ -367,9 +372,24 @@
 
   function nextStepLine(ev, r) {
     var base = Math.round(r.baseline);
+    var aet = state.suspectedAeT !== null ? Math.round(state.suspectedAeT) : null;
     if (ev.band === 'green') {
-      return 'This pace at ~' + base + ' bpm is at or below AeT. If a future hour held flat above ' +
-        'your current ceiling, that would be evidence for raising it.';
+      if (ev.aetRelation === 'below') {
+        // The ceiling wasn't tested — no raising-evidence claim.
+        return 'Aerobic at ~' + base + ' bpm \u2014 the suspected ceiling (' + aet +
+          ') remains untested.';
+      }
+      if (ev.aetRelation === 'near') {
+        return 'Held ~' + base + ' bpm \u2014 your suspected AeT \u2014 with drift under ' +
+          'control: this validates AeT \u2248 ' + aet + ' bpm.';
+      }
+      if (ev.aetRelation === 'above') {
+        return 'Stayed aerobic at ~' + base + ' bpm, above your suspected AeT (' + aet +
+          ') \u2014 consider retesting with the ceiling raised a few bpm.';
+      }
+      return 'This pace at ~' + base + ' bpm is at or below AeT at this heart rate \u2014 it ' +
+        'does not by itself establish the ceiling. If a future hour held flat above your ' +
+        'current ceiling, that would be evidence for raising it.';
     }
     if (ev.band === 'amber') {
       return 'Retest at your suspected AeT heart rate, settling slightly conservative, ' +
@@ -621,6 +641,14 @@
   });
 
   function readSettings() {
+    var aetRaw = els['set-aet'].value.trim();
+    var aet = aetRaw === '' ? null : clamp(+aetRaw || 0, 60, 220);
+    if (aet !== null && !isFinite(aet)) aet = null;
+    state.suspectedAeT = aet;
+    try {
+      if (aet === null) localStorage.removeItem('atv-aet');
+      else localStorage.setItem('atv-aet', String(aet));
+    } catch (e) { /* private mode */ }
     var w = clamp(+els['set-window'].value || DEFAULTS.windowMin, 5, 600);
     if (w !== state.settings.windowMin) state.baselineOverride = null;
     var t = clamp(+els['set-threshold'].value || DEFAULTS.thresholdPct, 0.5, 25);
@@ -633,9 +661,16 @@
     fitWindowToActivity();
     refresh();
   }
-  ['set-window', 'set-threshold', 'set-split', 'set-smooth'].forEach(function (id) {
+  ['set-window', 'set-threshold', 'set-split', 'set-smooth', 'set-aet'].forEach(function (id) {
     els[id].addEventListener('change', readSettings);
   });
+  try {
+    var savedAeT = localStorage.getItem('atv-aet');
+    if (savedAeT !== null) {
+      state.suspectedAeT = clamp(+savedAeT, 60, 220);
+      els['set-aet'].value = state.suspectedAeT;
+    }
+  } catch (e) { /* private mode */ }
   els['settings-form'].addEventListener('submit', function (e) { e.preventDefault(); });
   els['reset-settings'].addEventListener('click', function () {
     state.settings = Object.assign({}, DEFAULTS);

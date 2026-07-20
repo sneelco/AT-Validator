@@ -316,7 +316,9 @@
     BREAK_SUSTAIN_SEC: 120,
     BREAK_ONSET_BPM: 0.5,      // backtrack from the crossing to where the rise began
     XCHECK_DIFF_PCT: 2.5,      // Pa:HR vs HR-only disagreement that voids Pa:HR
-    BASELINE_MISMATCH_BPM: 2
+    BASELINE_MISMATCH_BPM: 2,
+    AET_BELOW_BPM: 5,          // baseline this far below suspected AeT → ceiling untested
+    AET_NEAR_BPM: 3            // baseline within this of suspected AeT → true threshold test
   };
 
   var SEVERITY_RANK = { warning: 0, caveat: 1, info: 2 };
@@ -574,6 +576,37 @@
           ' minutes — a late-run breakdown rather than drift spread across the hour.' });
     }
 
+    // ---- suspected-AeT gating --------------------------------------------
+    // The protocol tests a hypothesized ceiling the runner supplies. Where the
+    // window baseline sits relative to it decides what the verdict can claim.
+    var aetRelation = null;
+    var aet = settings.suspectedAeT;
+    if (aet !== null && aet !== undefined && isFinite(aet) && aet > 0) {
+      var diff = aet - result.baseline; // + : baseline below suspected AeT
+      if (diff > E.AET_BELOW_BPM) {
+        aetRelation = 'below';
+        findings.push({ severity: 'info', code: 'aet-untested',
+          text: 'Baseline ' + Math.round(result.baseline) + ' is ' + Math.round(diff) +
+            ' bpm below your suspected AeT (' + Math.round(aet) + ') \u2014 a pass here is ' +
+            'expected and does not test the threshold. To validate the ceiling, test with HR ' +
+            'settled near ' + Math.round(aet) + '.' });
+      } else if (Math.abs(diff) <= E.AET_NEAR_BPM) {
+        aetRelation = 'near';
+        findings.push({ severity: 'info', code: 'aet-true-test',
+          text: 'Baseline ' + Math.round(result.baseline) + ' is within ' + E.AET_NEAR_BPM +
+            ' bpm of your suspected AeT (' + Math.round(aet) + ') \u2014 this is a true ' +
+            'threshold test; the result speaks directly to the ceiling.' });
+      } else if (diff < -E.AET_NEAR_BPM) {
+        aetRelation = 'above';
+        if (band === 'green') {
+          findings.push({ severity: 'info', code: 'aet-conservative',
+            text: 'Baseline ' + Math.round(result.baseline) + ' sits ' + Math.round(-diff) +
+              ' bpm above your suspected AeT (' + Math.round(aet) + ') and the hour still ' +
+              'stayed coupled \u2014 evidence your suspected ceiling may be conservative.' });
+        }
+      }
+    }
+
     findings.sort(function (a, b) { return SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]; });
 
     var confidence = 'high';
@@ -581,7 +614,7 @@
     if (findings.some(function (f) { return f.severity === 'warning'; })) confidence = 'low';
 
     return { verdict: verdict, band: band, confidence: confidence, findings: findings,
-      primary: primary, secondary: secondary };
+      primary: primary, secondary: secondary, aetRelation: aetRelation };
   }
 
   // Coefficient of variation of smoothed pace (s per meter) over the window.

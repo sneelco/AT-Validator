@@ -96,6 +96,13 @@ mismatches. Warnings cap the reported confidence.
   vs. start, time over threshold, and headroom, plus an overall row.
 - **Adjustable settings** — window length (60 min), allowed rise (5%), split
   length (10 min), and baseline smoothing (30 s) are all defaults you can change.
+- **Suspected AeT** — optionally enter the ceiling you're testing (bpm,
+  remembered). The verdict then says what the run can actually claim: a pass
+  well below your suspected AeT is flagged as not testing the threshold, a
+  baseline at it makes the result a true threshold test, and staying aerobic
+  above it is flagged as evidence the ceiling may be conservative. A subtle
+  reference line marks it on the chart. Left blank, a green verdict is careful
+  to claim only "at or below AeT at this heart rate."
 - **Dark mode** — follows your OS preference.
 - **Demo data** — a "Try demo data" button loads a synthetic 90-minute run so
   you can explore without a file.

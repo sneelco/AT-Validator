@@ -158,7 +158,13 @@
       if (s[i].hr < hrMin) hrMin = s[i].hr;
       if (s[i].hr > hrMax) hrMax = s[i].hr;
     }
-    if (this.state) hrMax = Math.max(hrMax, this.state.threshold);
+    if (this.state) {
+      hrMax = Math.max(hrMax, this.state.threshold);
+      if (this.state.suspectedAeT) {
+        hrMax = Math.max(hrMax, this.state.suspectedAeT);
+        hrMin = Math.min(hrMin, this.state.suspectedAeT);
+      }
+    }
     var pad = Math.max(4, (hrMax - hrMin) * 0.08);
     return { tMin: tMin, tMax: tMax, hrMin: Math.max(0, hrMin - pad), hrMax: hrMax + pad };
   };
@@ -294,6 +300,27 @@
       ctx.lineTo(weX, thY);
       ctx.stroke();
       ctx.restore();
+
+      // Suspected-AeT reference: a subtle full-width line, labeled at the
+      // right edge so it never collides with the threshold label.
+      if (st.suspectedAeT) {
+        var aY = Math.round(yOf(st.suspectedAeT)) + 0.5;
+        ctx.save();
+        ctx.strokeStyle = P.muted;
+        ctx.globalAlpha = 0.6;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([1, 3]);
+        ctx.beginPath();
+        ctx.moveTo(L.plotX, aY);
+        ctx.lineTo(L.plotX + L.plotW, aY);
+        ctx.stroke();
+        ctx.restore();
+        ctx.font = '600 10px system-ui, -apple-system, "Segoe UI", sans-serif';
+        ctx.fillStyle = P.muted;
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText('AeT ' + Math.round(st.suspectedAeT), L.plotX + L.plotW - 4, aY - 2);
+      }
 
       // Baseline guide across the window (dotted — the designated start HR,
       // which may be manually refined via the vertical slider).
