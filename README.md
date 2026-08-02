@@ -1,11 +1,16 @@
-# Aerobic Threshold Validator
+# Aerobic Threshold Toolkit
 
 **Live app: <https://sneelco.github.io/AT-Validator/>**
 
-Validate your aerobic threshold (AeT) from a Garmin activity file — entirely in
-your browser. No backend, no build step, no data ever leaves your machine.
+Two tools for aerobic-base training, in one page, entirely in your browser. No
+backend, no build step, no data ever leaves your machine.
 
-## The method
+| Tab | What it does |
+|---|---|
+| **Validator** | The 60-minute heart-rate drift test — is this effort at or below your aerobic threshold? |
+| **Tracker** | Zone 2 run/walk progress over many activities — are the walk breaks going away? |
+
+## Validator — the method
 
 Based on the heart-rate drift field test popularized by coach Scott Johnston
 (Uphill Athlete): hold a steady effort at your *suspected* aerobic-threshold
@@ -59,7 +64,7 @@ plateau-then-break time ("held ~135 until ~50:00" — the durability limit),
 short windows, recording-gap coverage, and manual-vs-detected baseline
 mismatches. Warnings cap the reported confidence.
 
-## Features
+## Validator features
 
 - **Garmin `.fit` files parsed natively** — including the `.zip` that Garmin
   Connect's "Export Original" hands you (unzipped in-browser). A simple
@@ -107,6 +112,74 @@ mismatches. Warnings cap the reported confidence.
 - **Demo data** — a "Try demo data" button loads a synthetic 90-minute run so
   you can explore without a file.
 
+## Tracker — Zone 2 run/walk trends
+
+Zone 2 base building is usually run/walk: you run until heart rate creeps out of
+the zone, walk it back down, and repeat. Progress looks like *fewer and shorter
+walk breaks over the same distance*, then a faster pace at the same heart rate.
+That trend is invisible in any single activity, so the Tracker keeps a history
+and measures every run the same way.
+
+**Walk vs run.** Each activity is split into walk and run periods at a speed
+threshold — **4 mph by default**, adjustable (shown in mph or km/h to match the
+units toggle). The speed channel is smoothed with a rolling median first, and
+periods shorter than the **minimum period** (20 s by default) are merged into
+their neighbour, so a brief dip at a road crossing is not counted as a walk
+break. Stretches with no recording (gaps longer than 30 s) become "recording
+gap" periods and are excluded from moving time rather than counted as walking.
+
+**The measured window.** A Zone 2 session usually opens with a warm-up walk and
+closes with a cool-down walk; neither is a walk *break*, and leaving them in
+would inflate the walk count and drag the pace down. So by default the measured
+window **starts at the first run period and ends at the last** — both trimming
+rules are individually switchable ("Skip opening walk" / "Drop closing walk"),
+and the activity detail says how much was trimmed at each end. Everything below
+is measured inside that window.
+
+**What is measured**, for the whole window and for every fixed window that fits:
+
+- number of walk breaks, and walk breaks per mile/km
+- average walk-period and run-period duration (plus the longest of each)
+- average pace across the window, and running pace over the run periods only
+- distance covered, share of time spent running, average heart rate
+
+**Fixed windows.** Metrics are recomputed over the first **30, 45, 60, 75, 90 …
+minutes** of the window (15-minute steps). Comparing like with like is the point:
+a 50-minute run and an 80-minute run still share a 30- and a 45-minute window, so
+their walk counts are comparable. A window only appears for an activity long
+enough to fill it (with 30 s of slack, so a 59:40 run still counts as an hour).
+
+**Per-mile segments.** The window is also cut into 1-mile (or 1-km) segments,
+each with its split time, pace, walk breaks and walk time — so a fade in the
+back half shows up.
+
+**Trends.** Pick a metric (walk breaks, walks per mile, average pace, running
+pace, distance, average run/walk period, time spent running, average heart rate)
+and up to five windows to plot; each point is one activity in date order, one
+line per window, with the same data in the history table below.
+
+**Storage, export, import.** History lives in this browser's `localStorage`. What
+is stored is a compact 5-second series (speed, heart rate, cumulative distance —
+roughly 10 kB per hour of running), *not* the derived numbers, so changing the
+threshold or the trimming rules re-measures the entire history at once instead of
+leaving old rows computed under settings you no longer use. **Export JSON** writes
+the whole history to a file; **Import JSON** merges one back in. An activity is
+identified by its start time and duration, so importing the same file twice
+updates the existing rows rather than duplicating them.
+
+**Demo block.** "Add demo block" loads six synthetic weekly sessions with the
+progression the tool is meant to reveal — run periods lengthening, walk breaks
+fewer and shorter, pace improving — so the trend view is worth looking at before
+you have a history of your own. It is deterministic, so adding it twice updates
+the same six activities rather than piling up duplicates; remove them with the ✕
+on each row.
+
+Uploads accept the same files as the validator (`.fit`, Garmin's "Export
+Original" `.zip`, or CSV), several at once, and the tracker needs a pace channel:
+a file with heart rate only is refused with that reason. Equipment that records
+cumulative distance but no per-record speed (Peloton and friends) works — speed
+comes from the distance deltas.
+
 ## Using it
 
 Open the [hosted page](https://sneelco.github.io/AT-Validator/), or just open
@@ -144,16 +217,21 @@ deploys to `https://<your-username>.github.io/AT-Validator/`.
 Plain HTML/CSS/JS, no dependencies.
 
 ```
-index.html          page shell
-css/style.css       theme-aware styling (light + dark)
-js/fit-parser.js    minimal FIT decoder (record messages: timestamp, HR, …)
-js/zip.js           in-browser unzip for Garmin "Export Original" zips
-js/csv-parser.js    CSV fallback input
-js/analysis.js      time-weighted drift analysis, splits, verdict
-js/chart.js         canvas chart: draggable window, threshold, tooltip
-js/app.js           UI wiring
-js/demo.js          synthetic demo activity
-tests/run-tests.js  Node test suite
+index.html               page shell (tabbed: validator + tracker)
+css/style.css            theme-aware styling (light + dark)
+js/fit-parser.js         minimal FIT decoder (record messages: timestamp, HR, …)
+js/zip.js                in-browser unzip for Garmin "Export Original" zips
+js/csv-parser.js         CSV fallback input
+js/analysis.js           time-weighted drift analysis, splits, verdict
+js/chart.js              canvas chart: draggable window, threshold, tooltip
+js/app.js                validator UI wiring
+js/demo.js               synthetic demo activity + demo Zone 2 block
+js/tabs.js               tab switching (remembered, mirrored in the URL hash)
+js/tracker-analysis.js   walk/run segmentation, fixed windows, per-mile segments
+js/tracker-store.js      localStorage history, compact series, export/import
+js/tracker-chart.js      canvas trend chart across activities
+js/tracker.js            tracker UI wiring
+tests/run-tests.js       Node test suite
 ```
 
 Run the tests with:
@@ -169,6 +247,15 @@ to keep the repo text-only) come from the
 
 ## Notes & caveats
 
+- Tracker history is per-browser: it is not synced anywhere, and clearing site
+  data clears it. Export the JSON if you want a copy.
+- Walk/run splitting is only as good as the speed channel. GPS pace wanders in
+  trees and cities; a treadmill file recorded on the wrist carries an
+  accelerometer estimate. If the walk count looks wrong, check the activity's
+  timeline strip and adjust the threshold or the minimum period.
+- Time spent standing still (a road crossing, a drinks stop) counts as walking
+  unless the device paused recording, in which case it is a recording gap and
+  counts as neither.
 - The test assumes steady effort on flat/consistent terrain; hills, wind, heat,
   dehydration, and caffeine all move heart rate independently of threshold.
 - Recording gaps are handled (per-sample weight is capped at 30 s), but a

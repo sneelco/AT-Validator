@@ -10,6 +10,9 @@ const { parseFit } = require('../js/fit-parser.js');
 const { parseCsv } = require('../js/csv-parser.js');
 const { analyzeWindow, rangeStats, detectBaseline, evaluate, EVAL,
   assessSpeedTrust, deriveSpeedFromDistance } = require('../js/analysis.js');
+const tracker = require('../js/tracker-analysis.js');
+const trackerStore = require('../js/tracker-store.js');
+const { niceTicks } = require('../js/tracker-chart.js');
 
 let failures = 0;
 function check(name, cond, detail) {
@@ -693,6 +696,274 @@ function flatHour(hr) {
   const ev = evaluate(samples, r, {});
   check('aet unset: relation null', ev.aetRelation === null);
   check('aet unset: no aet findings', !ev.findings.some(x => /^aet-/.test(x.code)));
+}
+
+// ---- tracker: walk/run segmentation ---------------------------------------
+console.log('tracker segmentation');
+
+const RUN_MS = 2.5;    // ≈5.6 mph — above the 4 mph default threshold
+const WALK_MS = 1.3;   // ≈2.9 mph — below it
+
+// Build 1 Hz samples from [durationSeconds, speed] phases.
+function phases(list, opts) {
+  const samples = [];
+  let t = 0;
+  list.forEach(([dur, speed]) => {
+    for (let i = 0; i < dur; i++) samples.push({ t: t++, speed, hr: (opts && opts.hr) || 138 });
+  });
+  samples.push({ t: t, speed: list[list.length - 1][1], hr: (opts && opts.hr) || 138 });
+  return samples;
+}
+
+// Warm-up walk · run · walk · run · walk · run · cool-down walk.
+const CLASSIC = [[300, WALK_MS], [600, RUN_MS], [120, WALK_MS], [600, RUN_MS],
+  [120, WALK_MS], [600, RUN_MS], [300, WALK_MS]];
+
+{
+  const r = tracker.analyze(phases(CLASSIC));
+  const types = r.segments.map(s => s.type);
+  check('classic: 7 alternating periods', r.segments.length === 7 &&
+    types.join('') === [tracker.WALK, tracker.RUN, tracker.WALK, tracker.RUN,
+      tracker.WALK, tracker.RUN, tracker.WALK].join(''), types.join(','));
+  check('classic: boundaries exact', r.segments[1].start === 300 && r.segments[1].end === 900,
+    `${r.segments[1].start}–${r.segments[1].end}`);
+  check('classic: window skips the opening walk', r.window.start === 300, String(r.window.start));
+  check('classic: window drops the closing walk', r.window.end === 2340, String(r.window.end));
+  check('classic: trimmed amounts reported',
+    r.window.trimmedLead === 300 && r.window.trimmedTail === 300,
+    `${r.window.trimmedLead}/${r.window.trimmedTail}`);
+  const m = r.overall;
+  check('classic: 2 walk breaks inside the window', m.walks === 2, String(m.walks));
+  check('classic: 3 run periods', m.runs === 3, String(m.runs));
+  check('classic: avg run period 10:00', close(m.avgRunSec, 600, 1), String(m.avgRunSec));
+  check('classic: avg walk period 2:00', close(m.avgWalkSec, 120, 1), String(m.avgWalkSec));
+  check('classic: longest run 10:00', close(m.longestRunSec, 600, 1));
+  check('classic: run time 1800 s', close(m.runSeconds, 1800, 1), String(m.runSeconds));
+  check('classic: avg speed ≈ 2.36 m/s',
+    Math.abs(m.avgSpeed - (1800 * RUN_MS + 240 * WALK_MS) / 2040) < 0.02, String(m.avgSpeed));
+  check('classic: run-only pace ≈ run speed', Math.abs(m.runAvgSpeed - RUN_MS) < 0.02,
+    String(m.runAvgSpeed));
+  check('classic: run share of time ≈ 88%', Math.abs(m.runTimePct - 100 * 1800 / 2040) < 0.5,
+    String(m.runTimePct));
+  check('classic: walks per mile', Math.abs(m.walksPerMile - 2 / (m.distance / tracker.MI_M)) < 1e-9);
+}
+
+// A ten-second dip below the threshold is noise, not a walk break.
+{
+  const samples = phases(CLASSIC);
+  for (let t = 1200; t < 1210; t++) samples[t].speed = WALK_MS;
+  const r = tracker.analyze(samples);
+  check('dip: still 2 walk breaks', r.overall.walks === 2, String(r.overall.walks));
+  check('dip: run periods intact', r.overall.runs === 3, String(r.overall.runs));
+}
+// …but a 60-second walk is a real break.
+{
+  const samples = phases(CLASSIC);
+  for (let t = 1200; t < 1260; t++) samples[t].speed = WALK_MS;
+  const r = tracker.analyze(samples);
+  check('60s break: counted', r.overall.walks === 3, String(r.overall.walks));
+}
+
+// Trimming switched off: the opening and closing walks are measured too.
+{
+  const r = tracker.analyze(phases(CLASSIC),
+    { trimLeadingWalk: false, trimTrailingWalk: false });
+  check('no-trim: window is the whole activity', r.window.start === 0);
+  check('no-trim: 4 walk periods', r.overall.walks === 4, String(r.overall.walks));
+}
+
+// Threshold above every recorded speed: nothing qualifies as running.
+{
+  const r = tracker.analyze(phases(CLASSIC), { thresholdMs: 3.0 });
+  check('high threshold: no run periods', r.window.noRun === true && r.overall.runs === 0);
+  check('high threshold: whole activity measured', r.window.start === 0 &&
+    r.overall.avgRunSec === null);
+}
+
+// A slower threshold (3 mph) makes the "walks" running.
+{
+  const r = tracker.analyze(phases(CLASSIC), { thresholdMs: 3 * tracker.MPH_TO_MS * 0.9 });
+  check('low threshold: everything is a run', r.overall.walks === 0, String(r.overall.walks));
+}
+
+// ---- tracker: fixed windows and per-mile segments --------------------------
+console.log('tracker windows');
+
+{
+  // 100 minutes of running between an opening and closing walk.
+  const r = tracker.analyze(phases([[300, WALK_MS], [6000, RUN_MS], [300, WALK_MS]]));
+  check('buckets: 30/45/60/75/90', r.buckets.map(b => b.minutes).join(',') === '30,45,60,75,90',
+    r.buckets.map(b => b.minutes).join(','));
+  const b30 = r.buckets[0].metrics, b60 = r.buckets[2].metrics;
+  check('buckets: 30-min window is 1800 s', b30.seconds === 1800, String(b30.seconds));
+  check('buckets: distance scales with the window',
+    Math.abs(b60.distance / b30.distance - 2) < 0.01, String(b60.distance / b30.distance));
+  check('buckets: pace identical across windows',
+    Math.abs(b30.avgSpeed - b60.avgSpeed) < 0.01);
+}
+{
+  const short = tracker.analyze(phases([[1500, RUN_MS]]));
+  check('buckets: none below 30 min', short.buckets.length === 0, String(short.buckets.length));
+  const edge = tracker.analyze(phases([[1775, RUN_MS]]));
+  check('buckets: 29:35 still counts as the 30-min window', edge.buckets.length === 1,
+    String(edge.buckets.length));
+  const under = tracker.analyze(phases([[1740, RUN_MS]]));
+  check('buckets: 29:00 does not', under.buckets.length === 0, String(under.buckets.length));
+}
+{
+  // Constant 2.5 m/s: a mile takes 1609.344 / 2.5 ≈ 644 s.
+  const r = tracker.analyze(phases([[3000, RUN_MS]]));
+  check('miles: 5 segments (last partial)', r.distanceSegments.length === 5,
+    String(r.distanceSegments.length));
+  check('miles: first mile ≈ 644 s', Math.abs(r.distanceSegments[0].metrics.seconds - 644) <= 2,
+    String(r.distanceSegments[0].metrics.seconds));
+  check('miles: last segment flagged partial',
+    r.distanceSegments[4].partial === true && r.distanceSegments[0].partial === false);
+  check('miles: pace matches the run speed',
+    Math.abs(r.distanceSegments[1].metrics.avgSpeed - RUN_MS) < 0.02);
+  const km = tracker.analyze(phases([[3000, RUN_MS]]), { segmentDistance: tracker.KM_M });
+  check('km: 8 kilometre segments', km.distanceSegments.length === 8,
+    String(km.distanceSegments.length));
+}
+{
+  // Walk breaks land in the mile they start in.
+  const r = tracker.analyze(phases([[700, RUN_MS], [120, WALK_MS], [1200, RUN_MS]]));
+  const walksBySeg = r.distanceSegments.map(s => s.metrics.walks);
+  check('miles: one walk, in the segment it starts in',
+    walksBySeg.reduce((a, b) => a + b, 0) === 1, walksBySeg.join(','));
+}
+
+// ---- tracker: channels, gaps and degenerate input --------------------------
+console.log('tracker input handling');
+
+{
+  // Distance-only file (Peloton-style): speed is derived from the deltas.
+  const samples = [];
+  for (let t = 0; t <= 2000; t++) {
+    const speed = t < 300 ? WALK_MS : RUN_MS;
+    samples.push({ t, distance: t === 0 ? 0 : null, hr: 140 });
+  }
+  let d = 0;
+  samples.forEach((s, t) => { d += t === 0 ? 0 : (t <= 300 ? WALK_MS : RUN_MS); s.distance = d; });
+  const r = tracker.analyze(samples);
+  check('distance-only: run detected', r.overall.runs === 1, String(r.overall.runs));
+  check('distance-only: pace ≈ 2.5 m/s', Math.abs(r.overall.runAvgSpeed - RUN_MS) < 0.05,
+    String(r.overall.runAvgSpeed));
+}
+{
+  // A five-minute recording gap becomes a paused period, excluded from time.
+  const samples = phases([[600, RUN_MS], [600, RUN_MS]]).filter(s => s.t < 600 || s.t >= 900);
+  const r = tracker.analyze(samples, { trimLeadingWalk: false, trimTrailingWalk: false });
+  check('gap: paused period present', r.segments.some(s => s.type === tracker.PAUSE));
+  check('gap: excluded from moving time',
+    Math.abs(r.overall.movingSeconds - (r.overall.seconds - r.overall.pausedSeconds)) <= 1,
+    `${r.overall.movingSeconds} / ${r.overall.seconds} / ${r.overall.pausedSeconds}`);
+  check('gap: run periods on both sides', r.overall.runs === 2, String(r.overall.runs));
+}
+check('tracker: empty input', tracker.analyze([]) === null);
+check('tracker: null input', tracker.analyze(null) === null);
+check('tracker: HR-only file rejected',
+  tracker.analyze([{ t: 0, hr: 140 }, { t: 10, hr: 141 }, { t: 20, hr: 142 }]) === null);
+
+// ---- tracker store: series round-trip, identity, import/export -------------
+console.log('tracker store');
+
+const sampleActivity = phases(CLASSIC);
+{
+  const series = trackerStore.compressSeries(sampleActivity);
+  check('series: 5-second resolution', series.dt === 5 && series.n === 2641,
+    `${series.dt}/${series.n}`);
+  check('series: point count', series.sp.length === Math.ceil(2641 / 5),
+    String(series.sp.length));
+  const round = tracker.analyze(trackerStore.expandSeries(series));
+  const direct = tracker.analyze(sampleActivity);
+  check('series: walk count survives the round trip',
+    round.overall.walks === direct.overall.walks, `${round.overall.walks}`);
+  check('series: window survives the round trip',
+    Math.abs(round.window.start - direct.window.start) <= 5 &&
+    Math.abs(round.window.end - direct.window.end) <= 5,
+    `${round.window.start}–${round.window.end}`);
+  check('series: distance within 1%',
+    Math.abs(round.overall.distance / direct.overall.distance - 1) < 0.01,
+    `${round.overall.distance} vs ${direct.overall.distance}`);
+  check('series: heart rate preserved', Math.abs(round.overall.avgHr - 138) < 0.5,
+    String(round.overall.avgHr));
+}
+
+function storedActivity(startTime, name) {
+  const rec = {
+    name: name || 'Run',
+    sport: 'Running',
+    startTime: startTime,
+    addedAt: 1,
+    durationSec: 2640,
+    distanceM: 5000,
+    source: 'test',
+    series: trackerStore.compressSeries(sampleActivity)
+  };
+  rec.id = trackerStore.idFor(rec);
+  return rec;
+}
+
+{
+  const a = storedActivity(1700000000, 'Tuesday run');
+  const b = storedActivity(1700000000, 'Tuesday run (renamed)');
+  const c = storedActivity(1700600000, 'Next week');
+  check('identity: same start+duration is the same activity', a.id === b.id, `${a.id}/${b.id}`);
+  check('identity: different start is a different activity', a.id !== c.id);
+
+  const first = trackerStore.mergeActivities([], [a, c]);
+  check('merge: both added', first.added === 2 && first.list.length === 2);
+  check('merge: sorted by date', first.list[0].startTime < first.list[1].startTime);
+  const again = trackerStore.mergeActivities(first.list, [b]);
+  check('merge: re-import replaces rather than duplicates',
+    again.added === 0 && again.replaced === 1 && again.list.length === 2);
+  check('merge: replacement kept the newer name',
+    again.list[0].name === 'Tuesday run (renamed)', again.list[0].name);
+}
+
+{
+  const list = trackerStore.mergeActivities([], [storedActivity(1700000000)]).list;
+  const json = trackerStore.toExport(list, 1700000500);
+  const back = trackerStore.fromExport(json);
+  check('export: round trip', !back.error && back.activities.length === 1);
+  check('export: series survives', back.activities[0].series.sp.length === list[0].series.sp.length);
+  check('export: envelope carries format + version',
+    JSON.parse(json).format === trackerStore.FORMAT && JSON.parse(json).version === 1);
+  check('import: bare array accepted',
+    !trackerStore.fromExport(JSON.stringify(list)).error);
+  check('import: garbage rejected', !!trackerStore.fromExport('not json at all').error);
+  check('import: wrong shape rejected', !!trackerStore.fromExport('{"foo":1}').error);
+  check('import: foreign format rejected',
+    !!trackerStore.fromExport('{"format":"strava","activities":[]}').error);
+  check('import: empty list rejected', !!trackerStore.fromExport('{"activities":[]}').error);
+  check('import: entries without a series are skipped',
+    !!trackerStore.fromExport('{"activities":[{"name":"x"}]}').error);
+  const mixed = trackerStore.fromExport(JSON.stringify({
+    activities: [list[0], { name: 'broken' }]
+  }));
+  check('import: partial file keeps the good entries',
+    mixed.activities.length === 1 && mixed.skipped === 1);
+  check('import: hand-edited values are coerced', (() => {
+    const hand = trackerStore.fromExport(JSON.stringify({
+      activities: [{ name: 'x', series: { dt: 5, sp: [100, 'oops', 250], hr: [0, 0, 0] } }]
+    }));
+    return !hand.error && hand.activities[0].series.sp[1] === 0;
+  })());
+}
+
+check('store: no localStorage in Node degrades to empty', trackerStore.load().length === 0);
+check('store: save without localStorage reports failure', trackerStore.save([]).ok === false);
+
+// ---- tracker chart axis ticks ---------------------------------------------
+console.log('tracker chart');
+{
+  const t = niceTicks(0, 10, 5);
+  check('ticks: round steps', t.length >= 4 && t.length <= 7 && t[1] - t[0] === 2, t.join(','));
+  check('ticks: cover the range', t[0] >= 0 && t[t.length - 1] <= 10 + 1e-9);
+  check('ticks: degenerate span', niceTicks(5, 5, 5).length === 1);
+  const pace = niceTicks(540, 620, 5);
+  check('ticks: pace seconds', pace.every(v => v % 20 === 0), pace.join(','));
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nall tests passed');
