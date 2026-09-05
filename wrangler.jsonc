@@ -9,12 +9,13 @@
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
 
-  // Static assets are built by Vite into dist/client. The Cloudflare Vite
-  // plugin fills in `directory` at build time, so it is deliberately absent
-  // here. Anything under /api or /mcp must reach the Worker even if a
+  // Static assets are built by Vite into dist/client (`pnpm build` must run
+  // before `wrangler deploy`; the Vite plugin rewrites this for the built
+  // config). Anything under /api or /mcp must reach the Worker even if a
   // same-named asset existed; everything else is asset-first with SPA
   // fallback so deep links like /account load index.html.
   "assets": {
+    "directory": "./dist/client",
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*", "/mcp", "/mcp/*"]
   },
