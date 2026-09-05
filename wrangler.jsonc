@@ -1,0 +1,56 @@
+// Outpost Worker config. Only three things change per app: `name`,
+// the KV namespace `id`, and the D1 `database_name`/`database_id`.
+// Everything else is shared template plumbing. Secrets never go here
+// (see .dev.vars.example and README "Secrets").
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "at-validator",
+  "main": "./src/server/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Static assets are built by Vite into dist/client (`pnpm build` must run
+  // before `wrangler deploy`; the Vite plugin rewrites this for the built
+  // config). Anything under /api or /mcp must reach the Worker even if a
+  // same-named asset existed; everything else is asset-first with SPA
+  // fallback so deep links like /account load index.html.
+  "assets": {
+    "directory": "./dist/client",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/mcp", "/mcp/*"]
+  },
+
+  // Per-user app state: one JSON envelope per user under `state:<userId>`.
+  "kv_namespaces": [
+    { "binding": "STATE", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }
+  ],
+
+  // Better Auth tables only. App data never goes in D1.
+  "d1_databases": [
+    {
+      "binding": "AUTH_DB",
+      "database_name": "at-validator-auth",
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "vars": {
+    // Overridden per deploy by CI (see .github/workflows/deploy.yml) so
+    // /api/health reports the deployed commit. Non-secret.
+    "APP_VERSION": "dev"
+  },
+
+  "observability": { "enabled": true }
+
+  // Optional staging environment. Uncomment and create separate KV/D1
+  // resources, then deploy with `wrangler deploy --env staging`.
+  // "env": {
+  //   "staging": {
+  //     "name": "at-validator-staging",
+  //     "kv_namespaces": [{ "binding": "STATE", "id": "…" }],
+  //     "d1_databases": [{ "binding": "AUTH_DB", "database_name": "at-validator-auth-staging", "database_id": "…", "migrations_dir": "migrations" }],
+  //     "vars": { "APP_VERSION": "dev" }
+  //   }
+  // }
+}

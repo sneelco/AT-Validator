@@ -840,8 +840,23 @@
 
   // ---- init -----------------------------------------------------------------
 
+  // Re-read history and settings from the store (called by the Outpost bridge
+  // when a sync pulls changes made on another device or over MCP).
+  function reload() {
+    restoreSettings();
+    applySettingsToInputs();
+    state.activities = store.load();
+    state.cache = {};
+    if (state.selectedId && !state.activities.some(function (a) { return a.id === state.selectedId; })) {
+      state.selectedId = null;
+    }
+    render();
+  }
+
   restoreSettings();
   applySettingsToInputs();
   state.activities = store.load();
   render();
+
+  window.ATV.tracker = { reload: reload };
 })();

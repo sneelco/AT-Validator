@@ -1,15 +1,110 @@
-name: Tests
+name: CI
 
+# Runs on pull requests and on pushes to every branch except main (main runs
+# deploy.yml, which repeats the same checks before deploying).
 on:
-  push:
   pull_request:
+  push:
+    branches-ignore:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: write # to post the preview URL comment
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      touches_migrations: ${{ steps.migrations.outputs.touched }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - name: Build
+        run: pnpm build
+        env:
+          APP_VERSION: ${{ github.sha }}
+      - name: Bundle sizes
+        run: |
+          echo "## Bundle sizes" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          du -sh dist/client dist/*/index.js | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - name: Did this change touch migrations?
+        id: migrations
+        run: |
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -z "$base" ] || ! git cat-file -e "$base" 2>/dev/null; then base="origin/main"; fi
+          if git diff --name-only "$base" HEAD -- migrations/ | grep -q .; then
+            echo "touched=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "touched=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist
+          retention-days: 1
+
+  preview:
+    # Preview Worker versions share the production KV/D1 bindings (fine for
+    # these apps; see README). A PR that adds a migration is not previewed
+    # because the schema is only migrated on merge to main.
+    needs: check
+    if: github.event_name == 'pull_request' && needs.check.outputs.touches_migrations == 'false'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
-      - run: node tests/run-tests.js
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+      - name: Rebuild deploy redirect
+        # The artifact carries dist/ but not the gitignored .wrangler/ redirect
+        # that `pnpm build` writes; recreate it so wrangler finds the built config.
+        run: |
+          mkdir -p .wrangler/deploy
+          worker_dir=$(ls -d dist/*/ | grep -v '^dist/client/' | head -1)
+          echo "{\"configPath\":\"../../${worker_dir%/}/wrangler.json\"}" > .wrangler/deploy/config.json
+      - name: Upload preview version
+        id: upload
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: pnpm
+          command: versions upload --preview-alias pr-${{ github.event.number }} --message "PR #${{ github.event.number }} ${{ github.sha }}"
+      - name: Comment preview URL
+        uses: actions/github-script@v9
+        env:
+          PREVIEW_URL: ${{ steps.upload.outputs.deployment-url }}
+          OUTPUT: ${{ steps.upload.outputs.command-output }}
+        with:
+          script: |
+            const url = process.env.PREVIEW_URL || (process.env.OUTPUT.match(/https:\/\/\S+workers\.dev\S*/) || [])[0];
+            const marker = "<!-- outpost-preview -->";
+            const body = `${marker}\n**Preview:** ${url ? url : "(no URL found in wrangler output)"}\n\n_Commit ${context.sha.slice(0, 7)}. Preview versions share production KV/D1._`;
+            const { data: comments } = await github.rest.issues.listComments({ ...context.repo, issue_number: context.issue.number });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
+            else await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });

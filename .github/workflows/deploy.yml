@@ -1,0 +1,72 @@
+name: Deploy
+
+# main is what's deployed. Every push re-runs the checks (branch protection
+# may not be set), migrates D1 *before* deploying so new code never meets an
+# old schema, deploys, then smoke-checks /api/health.
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false # never cancel a run mid-migration
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.deployment-url }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - name: Build
+        run: pnpm build
+        env:
+          APP_VERSION: ${{ github.sha }}
+      - name: Bundle sizes
+        run: du -sh dist/client dist/*/index.js
+      - name: Apply D1 migrations
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: pnpm
+          command: d1 migrations apply AUTH_DB --remote
+      - name: Deploy
+        id: deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: pnpm
+          command: deploy
+      - name: Smoke check
+        env:
+          URL: ${{ steps.deploy.outputs.deployment-url }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test -n "$URL" || { echo "No deployment URL from wrangler"; exit 1; }
+          for i in 1 2 3 4 5 6; do
+            body=$(curl -fsS "$URL/api/health" || true)
+            echo "$body"
+            if echo "$body" | grep -q "\"ok\":true" && echo "$body" | grep -q "$SHA"; then
+              echo "Healthy at $URL running $SHA"; exit 0
+            fi
+            sleep 10
+          done
+          echo "Health check did not report ok + $SHA"; exit 1

@@ -1,0 +1,19 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cloudflare:
+        patterns: ["wrangler", "@cloudflare/*", "miniflare"]
+      better-auth:
+        patterns: ["better-auth", "@better-auth/*"]
+      react:
+        patterns: ["react", "react-dom", "@types/react", "@types/react-dom", "react-router"]
+      dev-tooling:
+        patterns: ["eslint*", "typescript*", "@eslint/*", "vitest", "vite", "@vitejs/*", "globals"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

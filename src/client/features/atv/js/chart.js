@@ -469,7 +469,6 @@
   // Slim pace/speed strip below the HR plot. Up = faster in both modes.
   // Segments deviating more than DEV_TOL from the window median are amber.
   ATChart.prototype.drawSpeedStrip = function (ctx, L, D, P, xOf, wsX, weX) {
-    var self = this;
     var s = this.samples;
     var st = this.state;
 

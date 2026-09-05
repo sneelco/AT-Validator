@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": ["vite/client", "vite-plugin-pwa/react"]
+  },
+  "include": ["src/client", "src/shared", "src/globals.d.ts"]
+}
