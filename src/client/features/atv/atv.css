@@ -1,6 +1,7 @@
-/* Aerobic Threshold Validator — theme-aware chrome per the reference palette. */
+/* Aerobic Threshold Validator — theme-aware chrome per the reference palette.
+   Scoped to the .atv host so its tokens do not collide with the Outpost shell. */
 
-:root {
+.atv {
   color-scheme: light;
   --page: #f9f9f7;
   --surface-1: #fcfcfb;
@@ -32,7 +33,7 @@
   --amber-text: #8a5f00;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  .atv {
     color-scheme: dark;
     --page: #0d0d0d;
     --surface-1: #1a1a19;
@@ -66,9 +67,7 @@
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
-html, body { margin: 0; padding: 0; }
-body {
-  background: var(--page);
+.atv {
   color: var(--text-primary);
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   line-height: 1.5;
@@ -76,7 +75,7 @@ body {
 .page {
   max-width: 1080px;
   margin: 0 auto;
-  padding: 32px 20px 48px;
+  padding: 16px 0 48px;
 }
 
 .masthead h1 { margin: 0 0 6px; font-size: 28px; letter-spacing: -0.01em; }

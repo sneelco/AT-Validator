@@ -6,13 +6,13 @@
 
 const fs = require('fs');
 const path = require('path');
-const { parseFit } = require('../js/fit-parser.js');
-const { parseCsv } = require('../js/csv-parser.js');
+const { parseFit } = require('../src/shared/atv/fit-parser.js');
+const { parseCsv } = require('../src/shared/atv/csv-parser.js');
 const { analyzeWindow, rangeStats, detectBaseline, evaluate, EVAL,
-  assessSpeedTrust, deriveSpeedFromDistance } = require('../js/analysis.js');
-const tracker = require('../js/tracker-analysis.js');
-const trackerStore = require('../js/tracker-store.js');
-const { niceTicks } = require('../js/tracker-chart.js');
+  assessSpeedTrust, deriveSpeedFromDistance } = require('../src/shared/atv/analysis.js');
+const tracker = require('../src/shared/atv/tracker-analysis.js');
+const trackerStore = require('../src/shared/atv/tracker-store.js');
+const { niceTicks } = require('../src/client/features/atv/js/tracker-chart.js');
 
 let failures = 0;
 function check(name, cond, detail) {
@@ -840,7 +840,6 @@ console.log('tracker input handling');
   // Distance-only file (Peloton-style): speed is derived from the deltas.
   const samples = [];
   for (let t = 0; t <= 2000; t++) {
-    const speed = t < 300 ? WALK_MS : RUN_MS;
     samples.push({ t, distance: t === 0 ? 0 : null, hr: 140 });
   }
   let d = 0;

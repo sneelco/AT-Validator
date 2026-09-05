@@ -1,0 +1,12 @@
+# Copy to .dev.vars for local development (gitignored). In production these are
+# Wrangler secrets: `wrangler secret put BETTER_AUTH_SECRET` etc.
+
+# Required. 32+ random bytes: `openssl rand -base64 32`
+BETTER_AUTH_SECRET=change-me-to-a-long-random-string-at-least-32-chars
+# Required. The public origin of the app (no trailing slash).
+BETTER_AUTH_URL=http://localhost:5173
+
+# Optional. When both are set, "Continue with GitHub" appears on the sign-in page.
+# Callback URL to register with GitHub: <BETTER_AUTH_URL>/api/auth/callback/github
+# GITHUB_CLIENT_ID=
+# GITHUB_CLIENT_SECRET=

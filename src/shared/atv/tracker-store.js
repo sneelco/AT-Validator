@@ -206,9 +206,32 @@
     return { activities: activities, skipped: skipped };
   }
 
-  // ---- localStorage ---------------------------------------------------------
+  // ---- persistence ----------------------------------------------------------
+  //
+  // By default the history lives in localStorage (the original, standalone
+  // behaviour, still used to pick up pre-Outpost data). Outpost installs a
+  // backend that routes reads and writes through its synced store instead.
+
+  var backend = null;
+
+  /*
+   * backend: { loadActivities(): any[], saveActivities(list): void,
+   *            loadSettings(): object|null, saveSettings(settings): void }
+   */
+  function setBackend(b) { backend = b || null; }
 
   function load() {
+    if (backend) {
+      try {
+        return sortActivities((backend.loadActivities() || []).map(sanitize).filter(Boolean));
+      } catch (e) {
+        return [];
+      }
+    }
+    return loadFromLocalStorage();
+  }
+
+  function loadFromLocalStorage() {
     try {
       var text = global.localStorage && global.localStorage.getItem(KEY);
       if (!text) return [];
@@ -221,6 +244,14 @@
   }
 
   function save(list) {
+    if (backend) {
+      try {
+        backend.saveActivities(list);
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: 'Could not save history: ' + (e && e.message) };
+      }
+    }
     try {
       global.localStorage.setItem(KEY, JSON.stringify({
         format: FORMAT, version: VERSION, activities: list
@@ -235,6 +266,13 @@
   }
 
   function loadSettings() {
+    if (backend) {
+      try { return backend.loadSettings() || null; } catch (e) { return null; }
+    }
+    return loadSettingsFromLocalStorage();
+  }
+
+  function loadSettingsFromLocalStorage() {
     try {
       var text = global.localStorage && global.localStorage.getItem(SETTINGS_KEY);
       return text ? JSON.parse(text) : null;
@@ -244,6 +282,10 @@
   }
 
   function saveSettings(settings) {
+    if (backend) {
+      try { backend.saveSettings(settings); } catch (e) { /* ignore */ }
+      return;
+    }
     try {
       global.localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
     } catch (e) { /* private mode */ }
@@ -257,7 +299,9 @@
     sortActivities: sortActivities, mergeActivities: mergeActivities,
     sanitize: sanitize,
     toExport: toExport, fromExport: fromExport,
-    load: load, save: save, loadSettings: loadSettings, saveSettings: saveSettings
+    load: load, save: save, loadSettings: loadSettings, saveSettings: saveSettings,
+    setBackend: setBackend,
+    loadFromLocalStorage: loadFromLocalStorage, loadSettingsFromLocalStorage: loadSettingsFromLocalStorage
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   global.ATV = global.ATV || {};

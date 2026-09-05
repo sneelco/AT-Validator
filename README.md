@@ -1,9 +1,11 @@
 # Aerobic Threshold Toolkit
 
-**Live app: <https://sneelco.github.io/AT-Validator/>**
+**Live app: <https://at-validator.sneelco.workers.dev>** (Cloudflare Workers; see Deployment)
 
-Two tools for aerobic-base training, in one page, entirely in your browser. No
-backend, no build step, no data ever leaves your machine.
+Two tools for aerobic-base training, in one page. Activity files are parsed and
+analysed in your browser and are never uploaded. Signing in is optional: it syncs
+the tracker's history and settings across devices and opens an MCP endpoint so
+Claude can read your trends.
 
 | Tab | What it does |
 |---|---|
@@ -182,9 +184,8 @@ comes from the distance deltas.
 
 ## Using it
 
-Open the [hosted page](https://sneelco.github.io/AT-Validator/), or just open
-`index.html` locally in any modern browser — there is nothing to install or
-build.
+Open the [live app](https://at-validator.sneelco.workers.dev), or run it
+locally with `pnpm dev` (see Development).
 
 **Getting your file from Garmin Connect:** open the activity → gear icon →
 **Export Original**. Drop the downloaded zip (or the `.fit` inside it) onto the
@@ -201,54 +202,90 @@ average heart rate of the final 5 minutes of the window against the baseline.
 When no plateau is found (e.g. an interval workout), the baseline falls back to
 the first 30 seconds of the window, averaged to smooth sensor noise.
 
-## Hosting on GitHub Pages
+## Accounts, sync and MCP
 
-The site is hosted at <https://sneelco.github.io/AT-Validator/>. The included
-workflow (`.github/workflows/deploy-pages.yml`) runs the tests and redeploys it
-automatically on every push to `main` — no branches to manage and no build
-configuration.
+The app is built on [Outpost](https://github.com/sneelco/outpost): a Cloudflare
+Worker serves the page, a small API, Better Auth on D1, and a per-user state blob
+in KV. What syncs is only the tracker's compact history (about 10 kB per
+activity) and its settings. The validator never stores an activity, and its two
+device preferences (units, suspected AeT) stay in this browser's localStorage.
 
-If you fork this repo, turn Pages on once: **Settings** → **Pages** → under
-**Build and deployment → Source**, choose **GitHub Actions**. Your copy then
-deploys to `https://<your-username>.github.io/AT-Validator/`.
+- **Without an account** everything works as before; history is saved in this
+  browser and can be exported/imported as JSON.
+- **Signed in**, the history on this device is uploaded on first sign-in and kept
+  in step afterwards. The dot in the header shows the sync state. If two devices
+  add runs while offline, the histories are merged by activity identity (same
+  start time and duration), so nothing is duplicated or lost. History from the
+  standalone version (`atv-tracker-activities-v1`) is picked up automatically.
+- **MCP:** account menu → **Account** → **API keys** → **New key**, then point an
+  MCP client at `https://<host>/mcp` with `Authorization: Bearer <key>`
+  ([docs/MCP.md](docs/MCP.md)). Besides the generic state tools, the toolkit
+  exposes `list_activities` and `tracker_metrics` (runs the walk/run analysis
+  under your settings and returns per-activity and per-window numbers).
 
 ## Development
 
-Plain HTML/CSS/JS, no dependencies.
-
-```
-index.html               page shell (tabbed: validator + tracker)
-css/style.css            theme-aware styling (light + dark)
-js/fit-parser.js         minimal FIT decoder (record messages: timestamp, HR, …)
-js/zip.js                in-browser unzip for Garmin "Export Original" zips
-js/csv-parser.js         CSV fallback input
-js/analysis.js           time-weighted drift analysis, splits, verdict
-js/chart.js              canvas chart: draggable window, threshold, tooltip
-js/app.js                validator UI wiring
-js/demo.js               synthetic demo activity + demo Zone 2 block
-js/tabs.js               tab switching (remembered, mirrored in the URL hash)
-js/tracker-analysis.js   walk/run segmentation, fixed windows, per-mile segments
-js/tracker-store.js      localStorage history, compact series, export/import
-js/tracker-chart.js      canvas trend chart across activities
-js/tracker.js            tracker UI wiring
-tests/run-tests.js       Node test suite
-```
-
-Run the tests with:
+Requires Node 22+ and pnpm.
 
 ```sh
-node tests/run-tests.js
+pnpm install
+cp .dev.vars.example .dev.vars     # set BETTER_AUTH_SECRET
+pnpm db:migrate:local              # create the local auth tables (once)
+pnpm dev                           # http://localhost:5173 (Vite + Worker in workerd)
+pnpm test                          # Vitest (schema, sync, Worker API) + node tests/run-tests.js
+pnpm typecheck && pnpm lint
+pnpm build && pnpm preview
 ```
 
-The FIT parser's expectations in the test suite were cross-checked against the
-official `garmin-fit-sdk` Python package; the fixture files (stored base64-encoded
-to keep the repo text-only) come from the
-[python-fitparse](https://github.com/dtcooper/python-fitparse) test suite.
+The toolkit itself is still plain JavaScript with no dependencies; the Outpost
+shell around it is React + TypeScript.
+
+```
+src/shared/atv/fit-parser.js         minimal FIT decoder (record messages: timestamp, HR, …)
+src/shared/atv/zip.js                in-browser unzip for Garmin "Export Original" zips
+src/shared/atv/csv-parser.js         CSV fallback input
+src/shared/atv/analysis.js           time-weighted drift analysis, splits, verdict
+src/shared/atv/demo.js               synthetic demo activity + demo Zone 2 block
+src/shared/atv/tracker-analysis.js   walk/run segmentation, fixed windows, per-mile segments
+src/shared/atv/tracker-store.js      history model, compact series, export/import, storage backend
+src/shared/state.ts                  Outpost state schema: { activities, settings }, legacy pickup, merge
+src/client/features/atv/markup.ts    the page markup (from the old index.html)
+src/client/features/atv/atv.css      theme-aware styling (light + dark), scoped to the toolkit
+src/client/features/atv/js/chart.js  canvas chart: draggable window, threshold, tooltip
+src/client/features/atv/js/app.js    validator UI wiring
+src/client/features/atv/js/tabs.js   tab switching (remembered, mirrored in the URL hash)
+src/client/features/atv/js/tracker-chart.js  canvas trend chart across activities
+src/client/features/atv/js/tracker.js        tracker UI wiring
+src/client/features/atv/bridge.ts    routes the tracker's storage through the Outpost store
+src/client/features/atv/ATValidatorFeature.tsx  mounts the markup once and boots the modules
+src/server/mcp/tools.app.ts          list_activities and tracker_metrics MCP tools
+src/client/, src/server/             Outpost shell: store, sync, auth, account page, Worker, MCP
+tests/run-tests.js                   the toolkit's Node test suite (parsers, analysis, tracker)
+```
+
+Run just the toolkit's suite with `pnpm test:legacy`. The FIT parser's
+expectations were cross-checked against the official `garmin-fit-sdk` Python
+package; the fixture files (stored base64-encoded to keep the repo text-only)
+come from the [python-fitparse](https://github.com/dtcooper/python-fitparse)
+test suite.
+
+## Deployment
+
+Every push to `main` runs `.github/workflows/deploy.yml`: install, typecheck,
+lint, test, build, apply D1 migrations, `wrangler deploy`, then check
+`/api/health` reports the deployed commit. Pull requests get a preview URL from
+`.github/workflows/ci.yml` (previews share the production KV and D1).
+
+First-time setup (create the KV namespace and D1 database, paste their ids into
+`wrangler.jsonc`, set the `BETTER_AUTH_*` secrets, add the Cloudflare token and
+account id to the repo secrets) is described step by step in the
+[Outpost README](https://github.com/sneelco/outpost#first-time-setup). Roll back
+with `pnpm exec wrangler rollback` or by reverting the commit.
 
 ## Notes & caveats
 
-- Tracker history is per-browser: it is not synced anywhere, and clearing site
-  data clears it. Export the JSON if you want a copy.
+- Without an account, tracker history is per-browser and clearing site data
+  clears it. Export the JSON if you want a copy, or sign in to keep it synced.
 - Walk/run splitting is only as good as the speed channel. GPS pace wanders in
   trees and cities; a treadmill file recorded on the wrist carries an
   accelerometer estimate. If the walk count looks wrong, check the activity's
